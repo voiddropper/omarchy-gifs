@@ -29,35 +29,70 @@ paste_now() {
   wtype -M shift -k Insert -m shift 2>/dev/null || true
 }
 
+# Fetch the GIF into the cache and echo its path.
+fetch_gif() {
+  local id="$1" url="$2" dest="$CACHE_DIR/$id.full.gif"
+
+  mkdir -p "$CACHE_DIR"
+  if [[ ! -s $dest ]]; then
+    local tmp="$dest.$$.part"
+    if ! curl --silent --fail --location --max-time 45 --output "$tmp" "$url" 2>/dev/null; then
+      rm -f "$tmp"
+      return 1
+    fi
+    mv -f "$tmp" "$dest"
+  fi
+  printf '%s' "$dest"
+}
+
 if [[ ${1:-} == "--media" ]]; then
   id="${2:-}"
   url="${3:-}"
-  as="${4:-gif}"
+  as="${4:-html}"
 
   [[ -n $id && -n $url ]] || exit 1
   # The id becomes a filename, so refuse anything that could escape the cache.
   [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
 
-  mkdir -p "$CACHE_DIR"
-  dest="$CACHE_DIR/$id.full.gif"
+  # wl-copy serves exactly one MIME type per invocation, so each mode is a
+  # different bet about what the receiving app asks the clipboard for.
+  case "$as" in
+    html)
+      # What a browser puts on the clipboard when you copy an image: HTML with
+      # a remote <img>. Rich compose boxes (Teams, and most webmail) fetch the
+      # URL, which keeps the animation. Needs no download, so it is instant.
+      printf '<img src="%s">' "$url" | wl-copy --type text/html
+      ;;
 
-  if [[ ! -s $dest ]]; then
-    tmp="$dest.$$.part"
-    if ! curl --silent --fail --location --max-time 45 --output "$tmp" "$url" 2>/dev/null; then
-      rm -f "$tmp"
-      notify "Could not download that GIF"
-      exit 1
-    fi
-    mv -f "$tmp" "$dest"
-  fi
+    png)
+      # The one format every app accepts -- it is what a screenshot puts on the
+      # clipboard -- but PNG cannot animate, so this pastes the first frame.
+      dest=$(fetch_gif "$id" "$url") || { notify "Could not download that GIF"; exit 1; }
+      if ! command -v magick >/dev/null 2>&1; then
+        notify "shiftPaste=png needs imagemagick"
+        exit 1
+      fi
+      if ! magick "$dest[0]" png:- 2>/dev/null | wl-copy --type image/png; then
+        notify "Could not convert that GIF"
+        exit 1
+      fi
+      ;;
 
-  if [[ $as == "file" ]]; then
-    # A file reference is what a file manager puts on the clipboard, so apps
-    # that accept pasted files treat this as an attachment.
-    printf 'file://%s\n' "$dest" | wl-copy --type text/uri-list
-  else
-    wl-copy --type image/gif <"$dest"
-  fi
+    file)
+      # A file reference is what a file manager puts on the clipboard, so apps
+      # that accept pasted files treat this as an attachment.
+      dest=$(fetch_gif "$id" "$url") || { notify "Could not download that GIF"; exit 1; }
+      printf 'file://%s\n' "$dest" | wl-copy --type text/uri-list
+      ;;
+
+    gif|*)
+      # The real bytes. Correct, and works in apps that ask for image/gif --
+      # but Chromium and Electron apps only ever ask for image/png, so this
+      # silently pastes nothing there.
+      dest=$(fetch_gif "$id" "$url") || { notify "Could not download that GIF"; exit 1; }
+      wl-copy --type image/gif <"$dest"
+      ;;
+  esac
 
   paste_now
   exit 0

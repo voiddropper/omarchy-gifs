@@ -453,7 +453,7 @@ Item {
       if (!media) return
       root.dismiss()
       Quickshell.execDetached([root.binDir + "/gif-insert", "--media",
-        String(item.id), String(media), String(root.config.shiftPaste || "gif")])
+        String(item.id), String(media), String(root.config.shiftPaste || "html")])
       return
     }
 

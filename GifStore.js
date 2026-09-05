@@ -6,6 +6,14 @@
 // Every provider the picker can talk to, in the order Ctrl+P cycles them.
 var PROVIDERS = ["giphy", "klipy"]
 
+// How Shift+Enter puts the GIF on the clipboard. wl-copy serves one MIME type
+// per invocation, so each mode is a different bet about what the receiving app
+// asks for: "html" is what a browser offers when you copy an image and is the
+// only one that animates in Chromium/Electron apps like Teams; "png" always
+// pastes but cannot animate; "gif" is the real bytes, which those apps never
+// request; "file" is a file-manager style reference.
+var SHIFT_PASTE_MODES = ["html", "png", "gif", "file"]
+
 function isProvider(value) {
   return PROVIDERS.indexOf(String(value || "")) >= 0
 }
@@ -33,7 +41,7 @@ function parseConfig(raw) {
       apiKeys: keys,
       contentFilter: String(data.contentFilter || "medium"),
       pasteUrl: data.pasteUrl === "gif" ? "gif" : "page",
-      shiftPaste: data.shiftPaste === "file" ? "file" : "gif",
+      shiftPaste: SHIFT_PASTE_MODES.indexOf(data.shiftPaste) >= 0 ? data.shiftPaste : "html",
       limit: Number(data.limit) > 0 ? Number(data.limit) : 50
     }
   } catch (e) {
@@ -43,7 +51,7 @@ function parseConfig(raw) {
 
 function defaultConfig() {
   return { provider: "giphy", apiKeys: {}, contentFilter: "medium",
-           pasteUrl: "page", shiftPaste: "gif", limit: 50 }
+           pasteUrl: "page", shiftPaste: "html", limit: 50 }
 }
 
 function serializeConfig(config) {
@@ -223,6 +231,7 @@ if (typeof module !== "undefined") {
     nextProvider: nextProvider,
     providerCount: providerCount,
     isProvider: isProvider,
-    PROVIDERS: PROVIDERS
+    PROVIDERS: PROVIDERS,
+    SHIFT_PASTE_MODES: SHIFT_PASTE_MODES
   }
 }

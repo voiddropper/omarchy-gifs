@@ -77,7 +77,7 @@ is unavailable.
 | `apiKeys`       | `{}`       | `{"giphy": "...", "klipy": "..."}` — one key per provider     |
 | `contentFilter` | `"medium"` | `off`, `low`, `medium`, `high` (mapped onto GIPHY's `r`/`pg-13`/`pg`/`g`) |
 | `pasteUrl`      | `"page"`   | plain paste: `page` sends the shareable page link, `gif` the raw `.gif` URL |
-| `shiftPaste`    | `"gif"`    | shift paste: `gif` copies the image bytes, `file` copies a file reference |
+| `shiftPaste`    | `"html"`   | shift paste: `html`, `png`, `gif` or `file` — see below       |
 | `limit`         | `50`       | results per search, clamped to 8–50                           |
 
 Edits apply live — no restart.
@@ -115,18 +115,29 @@ the point of sending a GIF. **`Shift+Enter` (or Shift+click) pastes the GIF
 itself**: the full-size file is downloaded and put on the clipboard as
 `image/gif`, so it uploads as a real animated image.
 
-The first shift-paste of a given GIF downloads it (originals run a few MB);
-after that it's cached and instant.
+### Why there's a `shiftPaste` setting
 
-If a client refuses pasted image data but accepts pasted *files*, set
-`"shiftPaste": "file"` and the clipboard carries a `text/uri-list` pointing at
-the cached file instead — the same thing a file manager puts there when you
-copy a file.
+`wl-copy` serves exactly **one** MIME type per invocation, and apps disagree
+about which one they'll read. Chromium and Electron apps — Teams, Discord's
+desktop client, most webmail — only ever ask the clipboard for `image/png`.
+Offer them `image/gif` and the paste does nothing at all: the data is right
+there, nobody asks for it.
 
-> Whether a given client keeps the animation on paste is up to that client:
-> some Electron apps re-encode clipboard images to a static PNG. The clipboard
-> itself carries the GIF intact — verified byte-identical, all frames present —
-> so if one client flattens it, try `"shiftPaste": "file"`.
+So each mode is a different bet:
+
+| `shiftPaste` | clipboard offers | notes                                                        |
+|--------------|------------------|--------------------------------------------------------------|
+| `html`       | `text/html`      | **default.** `<img src="…">` — exactly what a browser puts on the clipboard when you copy an image. Rich compose boxes fetch the URL, so the GIF animates. No download, instant. |
+| `png`        | `image/png`      | The one format everything accepts — it's what a screenshot uses. Static first frame only. Needs imagemagick. |
+| `gif`        | `image/gif`      | The real bytes. Correct, and right for apps that ask for it — but Chromium/Electron never do. |
+| `file`       | `text/uri-list`  | A file-manager style reference, for apps that accept pasted files. |
+
+Try `html` first. If your client pastes the literal `<img src="…">` text, it
+took the plain-text fallback rather than the HTML, so fall back to `png` for a
+static image that definitely lands.
+
+Modes that download cache the file, so only the first shift-paste of a given
+GIF waits; originals run a few MB.
 
 ## How it works
 
