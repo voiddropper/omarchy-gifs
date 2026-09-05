@@ -32,35 +32,49 @@ plain `SUPER + G` is taken by default (toggle window grouping).
 
 ## API key
 
-Create `~/.config/omarchy/gifs/config.json`:
+You don't have to edit any JSON. Open the picker, start typing, and if there's
+no key yet it shows you where to get one and gives you a field to paste it
+into:
 
-```json
-{
-  "provider": "giphy",
-  "apiKey": "",
-  "contentFilter": "medium",
-  "pasteUrl": "page",
-  "limit": 50
-}
+```
+                            ⚿
+              Add a GIPHY API key to search
+        developers.giphy.com → sign in → Create an API Key.
+
+        ┌──────────────────────────────────┐  ┌──────┐
+        │ Paste your GIPHY API key         │  │ Save │
+        └──────────────────────────────────┘  └──────┘
+                Enter to focus · Ctrl+K anytime
 ```
 
-**GIPHY** (default) — <https://developers.giphy.com> → sign in → Create an API
-Key. Free; the beta tier allows 100 calls/hour and 50 results per search. A
-search fires at most once per 300ms of typing, so that limit is hard to reach
-in normal use.
+`Enter` focuses the field, `Ctrl+K` reaches it any time. The key is **checked
+against the provider before it is saved**, so a bad paste never displaces a
+working key — you get "That key was rejected by GIPHY" instead of a silently
+broken picker. The field is masked; the check is better proof than reading the
+string back anyway.
 
-**KLIPY** — <https://klipy.com> → Partner Panel → create an app key, and set
-`"provider": "klipy"`.
+Where to get one:
 
-Until a key is set the picker still opens and favorites still work — only
-search is unavailable, and the empty state tells you where to get a key.
+- **GIPHY** (default) — <https://developers.giphy.com> → sign in → Create an
+  API Key. Free; the beta tier allows 100 calls/hour and 50 results per search.
+  A search fires at most once per 300ms of typing, so that's hard to reach.
+- **KLIPY** — <https://klipy.com> → Partner Panel → create an app key.
+
+`Ctrl+P` switches provider without leaving the picker. Keys are stored **per
+provider**, so switching never discards the other one — set both up once and
+flip between them freely.
+
+Until a key is set the picker still opens and favorites still work; only search
+is unavailable.
 
 ### Options
+
+`~/.config/omarchy/gifs/config.json`, written for you when you save a key:
 
 | key             | default    | meaning                                                       |
 |-----------------|------------|---------------------------------------------------------------|
 | `provider`      | `"giphy"`  | `giphy` or `klipy`                                            |
-| `apiKey`        | `""`       | key for the selected provider                                 |
+| `apiKeys`       | `{}`       | `{"giphy": "...", "klipy": "..."}` — one key per provider     |
 | `contentFilter` | `"medium"` | `off`, `low`, `medium`, `high` (mapped onto GIPHY's `r`/`pg-13`/`pg`/`g`) |
 | `pasteUrl`      | `"page"`   | `page` pastes the shareable page link; `gif` pastes the raw `.gif` URL |
 | `limit`         | `50`       | results per search, clamped to 8–50                           |
@@ -80,6 +94,8 @@ and animate that too; it just renders as an image rather than an unfurled card.
 | arrows / `PageUp` `PageDown` | move the cursor                              |
 | `Enter` / left click         | paste into the focused app                   |
 | `Ctrl+D` / right click       | toggle favorite                              |
+| `Ctrl+P` / `Ctrl+Shift+P`    | next / previous provider                     |
+| `Ctrl+K`                     | focus the API key field                      |
 | `Backspace` / `Ctrl+U`       | delete a character / clear the query          |
 | `Esc`                        | clear the query, then close                  |
 
@@ -91,8 +107,15 @@ clearing the query drops back.
 
 - `bin/gif-search` queries the provider and normalizes both response shapes into
   one. The API key is read from disk inside the script, so it never appears in
-  the process table or in the shell's QML. Adding a provider is one `case` arm
-  and one jq expression — nothing else knows where GIFs come from.
+  the process table or in the shell's QML. Adding a provider means one `case`
+  arm in `gif-providers.sh` and adding it to `PROVIDERS` in `GifStore.js` —
+  the UI, the key field, and `Ctrl+P` pick it up from there.
+- `bin/gif-check` verifies a key before it is written to disk. The key arrives
+  on **stdin, never argv**, so it stays out of the process table — the same
+  reason Omarchy's wifi panel pipes passphrases in rather than passing them as
+  arguments.
+- `bin/gif-providers.sh` holds the per-provider request building and response
+  normalization shared by both.
 - `bin/gif-insert` copies the URL and sends `shift+Insert`, the same approach
   `omarchy-menu-emoji-insert` uses. The URL stays on the clipboard afterwards so
   it lands in clipboard history and can be pasted again.

@@ -61,9 +61,14 @@ Item {
   property var failedIds: ({})
   property string cachingId: ""
 
-  readonly property bool hasApiKey: String(config.apiKey || "").length > 0
+  readonly property bool hasApiKey: GifStore.apiKeyFor(config).length > 0
   readonly property string providerLabel: GifStore.providerLabel(config.provider)
   readonly property string providerHint: GifStore.providerSignupHint(config.provider)
+  readonly property bool multipleProviders: GifStore.providerCount() > 1
+
+  // "" idle, "checking", "ok", or an error code from gif-check.
+  property string keyCheckState: ""
+  property string pendingKey: ""
 
   // ---------------------------------------------------------------- theming
   // Shares the [menu] surface tokens, so any theme that styles the menu and
@@ -149,6 +154,91 @@ Item {
   function loadConfig(raw) {
     root.config = GifStore.parseConfig(raw)
     if (root.opened && root.mode === "search" && root.filterText) root.runSearch()
+  }
+
+  function saveConfig(next) {
+    root.config = next
+    configFile.setText(GifStore.serializeConfig(next))
+  }
+
+  function cycleProvider(delta) {
+    if (!root.multipleProviders) return
+    var next = ({})
+    for (var k in root.config) next[k] = root.config[k]
+    next.provider = GifStore.nextProvider(root.config.provider, delta)
+
+    // Results belong to the provider that returned them.
+    root.searchResults = []
+    root.searchError = ""
+    root.keyCheckState = ""
+    root.selectedIndex = 0
+    root.saveConfig(next)
+
+    // Keys are per provider, so the field must show the new provider's key
+    // rather than whatever was typed for the previous one.
+    keyField.text = GifStore.apiKeyFor(next)
+
+    if (root.mode === "search" && root.filterText) root.runSearch()
+    else root.rebuildDisplay()
+  }
+
+  // ------------------------------------------------------------ key entry
+  function focusKeyField() {
+    root.keyCheckState = ""
+    keyField.text = GifStore.apiKeyFor(root.config)
+    keyField.forceActiveFocus()
+    keyField.selectAll()
+  }
+
+  function blurKeyField() {
+    keyField.focus = false
+    keyCatcher.forceActiveFocus()
+  }
+
+  function submitKey() {
+    var key = keyField.text.replace(/^\s+|\s+$/g, "")
+    if (!key) return
+    if (keyCheckProc.running) return
+
+    // Verify before writing: a key that does not work should not displace one
+    // that does. gif-check takes it on stdin, so it never reaches argv.
+    root.pendingKey = key
+    root.keyCheckState = "checking"
+    keyCheckProc.command = [root.binDir + "/gif-check", String(root.config.provider)]
+    keyCheckProc.running = true
+  }
+
+  function applyKeyCheck(raw) {
+    var ok = false
+    var error = "parse"
+    try {
+      var data = JSON.parse(String(raw || "{}"))
+      ok = data.ok === true
+      error = String(data.error || "parse")
+    } catch (e) {
+      ok = false
+    }
+
+    if (!ok) {
+      root.keyCheckState = error
+      root.pendingKey = ""
+      return
+    }
+
+    var next = ({})
+    for (var k in root.config) next[k] = root.config[k]
+    var keys = ({})
+    for (var j in (root.config.apiKeys || {})) keys[j] = root.config.apiKeys[j]
+    keys[root.config.provider] = root.pendingKey
+    next.apiKeys = keys
+
+    root.keyCheckState = "ok"
+    root.pendingKey = ""
+    root.saveConfig(next)
+    root.blurKeyField()
+
+    // The config reload re-runs the search, but only if there is a query.
+    if (root.mode === "search" && root.filterText) root.runSearch()
   }
 
   function loadFavorites(raw) {
@@ -414,6 +504,18 @@ Item {
   }
 
   Process {
+    id: keyCheckProc
+    stdinEnabled: true
+    onStarted: {
+      write(root.pendingKey + "\n")
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyKeyCheck(text)
+    }
+  }
+
+  Process {
     id: cacheListProc
     stdout: StdioCollector {
       waitForEnd: true
@@ -451,6 +553,7 @@ Item {
     id: configFile
     path: root.configDir + "/config.json"
     watchChanges: true
+    atomicWrites: true
     printErrors: false
     onLoaded: root.loadConfig(text())
     onLoadFailed: root.loadConfig("")
@@ -517,6 +620,12 @@ Item {
           } else if (event.key === Qt.Key_D && (event.modifiers & Qt.ControlModifier)) {
             if (root.cursorActive) root.toggleFavoriteAt(root.selectedIndex)
             event.accepted = true
+          } else if (event.key === Qt.Key_P && (event.modifiers & Qt.ControlModifier)) {
+            root.cycleProvider((event.modifiers & Qt.ShiftModifier) ? -1 : 1)
+            event.accepted = true
+          } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
+            root.focusKeyField()
+            event.accepted = true
           } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
             root.toggleMode()
             event.accepted = true
@@ -542,8 +651,9 @@ Item {
             root.selectPage(1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive) root.activateIndex(root.selectedIndex)
+            if (root.cursorActive && root.displayItems.length > 0) root.activateIndex(root.selectedIndex)
             else if (root.displayItems.length > 0) root.cursorActive = true
+            else if (emptyState.needsKey) root.focusKeyField()
             event.accepted = true
           } else if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127) {
             root.setFilter(root.filterText + event.text)
@@ -720,6 +830,7 @@ Item {
 
           // ------------------------------------------------------ empty states
           Column {
+            id: emptyState
             anchors.centerIn: parent
             width: parent.width - Style.space(40)
             spacing: Style.space(10)
@@ -731,7 +842,7 @@ Item {
 
             Text {
               textFormat: Text.PlainText
-              text: parent.needsKey ? "󰌆" : (parent.failed ? "󰅚" : "󰈉")
+              text: emptyState.needsKey ? "󰌆" : (emptyState.failed ? "󰅚" : "󰈉")
               color: root.selectedText
               opacity: 0.8
               font.family: root.fontFamily
@@ -750,12 +861,12 @@ Item {
               font.family: root.fontFamily
               font.pixelSize: Style.font.title
               text: {
-                if (parent.needsKey) {
+                if (emptyState.needsKey) {
                   return root.searchError === "bad-key"
                     ? "That " + root.providerLabel + " key was rejected"
                     : "Add a " + root.providerLabel + " API key to search"
                 }
-                if (parent.failed) {
+                if (emptyState.failed) {
                   if (root.searchError === "network")
                     return "Could not reach " + root.providerLabel + " — check your connection"
                   if (root.searchError === "rate-limit")
@@ -785,12 +896,81 @@ Item {
               font.pixelSize: Style.font.bodySmall
               visible: text.length > 0
               text: {
-                if (parent.needsKey)
-                  return root.providerHint + ",\n"
-                       + "then put it in " + root.configDir + "/config.json as \"apiKey\"."
+                if (emptyState.needsKey)
+                  return root.providerHint + "."
                 if (root.mode === "favorites" && !root.filterText)
                   return "Type to search " + root.providerLabel + ", then press Ctrl+D on a GIF to save it here."
                 return ""
+              }
+            }
+
+            // Paste the key straight into the picker rather than sending the
+            // user off to edit JSON. It is checked against the provider before
+            // it is saved, so a bad paste never displaces a working key.
+            Item {
+              width: parent.width
+              height: keyRow.implicitHeight
+              visible: emptyState.needsKey
+
+              Row {
+                id: keyRow
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: Style.spacing.controlGap
+
+                TextField {
+                  id: keyField
+                  width: Math.min(Style.space(340), emptyState.width - saveButton.width - Style.spacing.controlGap * 2)
+                  // Masked: the paste is verified by the check below, which is
+                  // better proof than squinting at the string, and it keeps the
+                  // key off screen shares.
+                  password: true
+                  placeholderText: "Paste your " + root.providerLabel + " API key"
+                  foreground: root.foreground
+                  accent: root.selectedText
+                  onAccepted: root.submitKey()
+                  onTextChanged: if (root.keyCheckState !== "checking") root.keyCheckState = ""
+                  Keys.onPressed: function(event) {
+                    if (event.key === Qt.Key_Escape) {
+                      root.blurKeyField()
+                      event.accepted = true
+                    }
+                  }
+                }
+
+                Button {
+                  id: saveButton
+                  text: root.keyCheckState === "checking" ? "Checking…" : "Save"
+                  bordered: true
+                  enabled: root.keyCheckState !== "checking"
+                  foreground: root.foreground
+                  accent: root.selectedText
+                  onClicked: root.submitKey()
+                }
+              }
+            }
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              visible: emptyState.needsKey && text.length > 0
+              color: root.keyCheckState === "ok" ? root.selectedText : root.foreground
+              opacity: root.keyCheckState === "" ? 0.55 : 0.9
+              text: {
+                switch (root.keyCheckState) {
+                  case "": return "Enter to focus · Ctrl+K anytime"
+                  case "checking": return "Checking the key against " + root.providerLabel + "…"
+                  case "ok": return "Key accepted and saved"
+                  case "bad-key": return "That key was rejected by " + root.providerLabel
+                  case "no-key": return "Paste a key first"
+                  case "rate-limit": return root.providerLabel + " rate limit reached — try again shortly"
+                  case "network": return "Could not reach " + root.providerLabel + " — check your connection"
+                  case "no-results": return "The key worked but returned nothing readable"
+                  default: return "Check failed (" + root.keyCheckState + ")"
+                }
               }
             }
           }
@@ -822,9 +1002,10 @@ Item {
             opacity: 0.5
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            text: "Enter or click paste   ·   Ctrl+D or right-click favorite   ·   Tab "
-                + (root.mode === "favorites" ? "search " + root.providerLabel : "favorites")
-                + "   ·   Esc close"
+            text: "Enter paste   ·   Ctrl+D favorite   ·   Tab "
+                + (root.mode === "favorites" ? "search" : "favorites")
+                + (root.multipleProviders ? "   ·   Ctrl+P " + GifStore.providerLabel(GifStore.nextProvider(root.config.provider, 1)) : "")
+                + "   ·   Ctrl+K key   ·   Esc close"
           }
         }
       }

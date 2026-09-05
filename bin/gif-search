@@ -1,18 +1,17 @@
 #!/bin/bash
 
-# Query a GIF provider and print a normalized JSON array the picker can render.
+# Query the configured GIF provider and print a normalized result list.
 # The API key is read from disk here and never passed as an argument, so it
 # stays out of the process table and out of the shell's QML.
 #
-# Google decommissioned the Tenor API on 2026-06-30, so the picker speaks to
-# GIPHY (default) or KLIPY instead. Both are normalized to the same shape, and
-# ids are prefixed per provider because favorites and the media cache are
-# shared between them.
-#
-# Usage: omarchy-gif-search <query>   |   omarchy-gif-search --featured
+# Usage: gif-search <query>   |   gif-search --featured
 # Output: {"ok":true,"results":[...]}  or  {"ok":false,"error":"<code>"}
 
 set -uo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gif-providers.sh
+source "$HERE/gif-providers.sh"
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/gifs/config.json"
 
@@ -24,12 +23,16 @@ emit_error() {
 [[ -f $CONFIG ]] || emit_error "no-config"
 
 provider=$(jq -r '.provider // "giphy"' "$CONFIG" 2>/dev/null) || emit_error "bad-config"
-api_key=$(jq -r '.apiKey // ""' "$CONFIG" 2>/dev/null) || emit_error "bad-config"
+
+# Keys are stored per provider so switching providers does not lose the other
+# key. A flat "apiKey" from an older config still works for the active one.
+api_key=$(jq -r --arg p "$provider" '.apiKeys[$p] // .apiKey // ""' "$CONFIG" 2>/dev/null) \
+  || emit_error "bad-config"
 [[ -n $api_key && $api_key != "null" ]] || emit_error "no-key"
 
 limit=$(jq -r '.limit // 50' "$CONFIG" 2>/dev/null)
 [[ $limit =~ ^[0-9]+$ ]] || limit=50
-# Both providers cap a free key at 50 results per request.
+# Both providers cap a free key at 50 results per request; KLIPY's floor is 8.
 (( limit > 50 )) && limit=50
 (( limit < 8 )) && limit=8
 
@@ -37,124 +40,21 @@ content_filter=$(jq -r '.contentFilter // "medium"' "$CONFIG" 2>/dev/null)
 [[ $content_filter =~ ^(off|low|medium|high)$ ]] || content_filter="medium"
 
 if [[ ${1:-} == "--featured" ]]; then
-  mode="featured"
-  query=""
+  mode="featured"; query=""
 else
-  mode="search"
-  query="${1:-}"
+  mode="search"; query="${1:-}"
   [[ -n $query ]] || emit_error "empty-query"
 fi
 
-# Ask curl for the status code on its own last line, so an auth failure can be
-# reported as such instead of collapsing into a generic network error.
-http_get() {
-  curl --silent --show-error --location --max-time 12 \
-    --write-out $'\n%{http_code}' "$@" 2>/dev/null
-}
+gif_build_request "$provider" "$api_key" "$mode" "$query" "$limit" "$content_filter" \
+  || emit_error "bad-provider"
 
-case "$provider" in
-  giphy)
-    # GIPHY ratings are g / pg / pg-13 / r; map the shared filter names onto them.
-    case "$content_filter" in
-      off)    rating="r" ;;
-      low)    rating="pg-13" ;;
-      medium) rating="pg" ;;
-      high)   rating="g" ;;
-    esac
-
-    if [[ $mode == "featured" ]]; then
-      endpoint="https://api.giphy.com/v1/gifs/trending"
-    else
-      endpoint="https://api.giphy.com/v1/gifs/search"
-    fi
-
-    args=(--get "$endpoint"
-      --data-urlencode "api_key=$api_key"
-      --data-urlencode "limit=$limit"
-      --data-urlencode "rating=$rating")
-    [[ -n $query ]] && args+=(--data-urlencode "q=$query")
-
-    normalize='
-      {
-        ok: true,
-        results: [
-          .data[]?
-          | select((.images.fixed_width.url // .images.downsized.url // .images.original.url) != null)
-          | {
-              id: ("g_" + ((.id // "") | tostring | gsub("[^A-Za-z0-9_-]"; "-"))),
-              title: (.title // ""),
-              pageUrl: (.url // ""),
-              gifUrl: (.images.original.url // .images.downsized.url // .images.fixed_width.url),
-              tinyGifUrl: (.images.fixed_width.url // .images.downsized.url // .images.original.url),
-              previewUrl: (.images.fixed_width_still.url // .images.original_still.url // .images.fixed_width.url),
-              width:  (((.images.fixed_width.width  // "0") | tostring | tonumber?) // 0),
-              height: (((.images.fixed_width.height // "0") | tostring | tonumber?) // 0)
-            }
-        ]
-      }'
-    ;;
-
-  klipy)
-    # KLIPY takes the key as a path segment and uses the same filter vocabulary.
-    if [[ $mode == "featured" ]]; then
-      endpoint="https://api.klipy.com/api/v1/$api_key/gifs/trending"
-    else
-      endpoint="https://api.klipy.com/api/v1/$api_key/gifs/search"
-    fi
-
-    args=(--get "$endpoint"
-      --data-urlencode "per_page=$limit"
-      --data-urlencode "page=1"
-      --data-urlencode "content_filter=$content_filter"
-      --data-urlencode "format_filter=gif,jpg")
-    [[ -n $query ]] && args+=(--data-urlencode "q=$query")
-
-    # KLIPY nests the item list at .data.data and offers hd/md/sm renditions.
-    # There is no shareable page URL in the response, so pageUrl is the direct
-    # GIF link; the picker's pasteUrl:"page" setting falls back to it.
-    normalize='
-      {
-        ok: true,
-        results: [
-          (.data.data // .data // [])[]?
-          | select((.file.sm.gif.url // .file.md.gif.url // .file.hd.gif.url) != null)
-          | {
-              id: ("k_" + ((.slug // .id // "") | tostring | gsub("[^A-Za-z0-9_-]"; "-"))),
-              title: (.title // ""),
-              pageUrl: (.file.hd.gif.url // .file.md.gif.url // .file.sm.gif.url),
-              gifUrl: (.file.hd.gif.url // .file.md.gif.url // .file.sm.gif.url),
-              tinyGifUrl: (.file.sm.gif.url // .file.md.gif.url // .file.hd.gif.url),
-              previewUrl: (.file.sm.jpg.url // .file.md.jpg.url // .file.sm.gif.url // .file.md.gif.url),
-              width:  (((.file.sm.gif.width  // 0) | tostring | tonumber?) // 0),
-              height: (((.file.sm.gif.height // 0) | tostring | tonumber?) // 0)
-            }
-        ]
-      }'
-    ;;
-
-  *)
-    emit_error "bad-provider"
-    ;;
-esac
-
-raw=$(http_get "${args[@]}") || emit_error "network"
+raw=$(gif_http_get "${REQ_ARGS[@]}") || emit_error "network"
 status="${raw##*$'\n'}"
 body="${raw%$'\n'*}"
 
-# KLIPY carries the key as a path segment, so a bad key does not resolve to a
-# route at all and comes back 404 rather than 401.
-if [[ $provider == "klipy" && $status == "404" ]]; then
-  emit_error "bad-key"
-fi
-
-case "$status" in
-  200) ;;
-  401|403) emit_error "bad-key" ;;
-  429)     emit_error "rate-limit" ;;
-  "")      emit_error "network" ;;
-  *)       emit_error "http-$status" ;;
-esac
-
+err=$(gif_status_error "$provider" "$status")
+[[ -z $err ]] || emit_error "$err"
 [[ -n $body ]] || emit_error "empty-response"
 
-jq -c "$normalize" <<<"$body" 2>/dev/null || emit_error "parse"
+jq -c "$REQ_NORMALIZE" <<<"$body" 2>/dev/null || emit_error "parse"

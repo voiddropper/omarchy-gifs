@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Verify an API key actually works, before it is written to disk.
+#
+# The key is read from stdin, never from argv, so it does not appear in the
+# process table -- the same reason omarchy's wifi panel pipes passphrases in.
+#
+# Usage: printf '%s' "$key" | gif-check <provider>
+# Output: {"ok":true,"results":<n>}  or  {"ok":false,"error":"<code>"}
+
+set -uo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gif-providers.sh
+source "$HERE/gif-providers.sh"
+
+emit_error() {
+  jq -cn --arg e "$1" '{ok: false, error: $e}'
+  exit 0
+}
+
+provider="${1:-}"
+[[ -n $provider ]] || emit_error "bad-provider"
+
+IFS= read -r api_key || true
+# Trim whitespace a paste may have carried along.
+api_key="${api_key#"${api_key%%[![:space:]]*}"}"
+api_key="${api_key%"${api_key##*[![:space:]]}"}"
+[[ -n $api_key ]] || emit_error "no-key"
+
+# A real query with the provider's minimum page size: enough to prove the key
+# is accepted and that results come back in the shape we expect.
+gif_build_request "$provider" "$api_key" "search" "test" 8 "medium" \
+  || emit_error "bad-provider"
+
+raw=$(gif_http_get "${REQ_ARGS[@]}") || emit_error "network"
+status="${raw##*$'\n'}"
+body="${raw%$'\n'*}"
+
+err=$(gif_status_error "$provider" "$status")
+[[ -z $err ]] || emit_error "$err"
+[[ -n $body ]] || emit_error "empty-response"
+
+count=$(jq -c "$REQ_NORMALIZE" <<<"$body" 2>/dev/null | jq -r '.results | length' 2>/dev/null) \
+  || emit_error "parse"
+[[ $count =~ ^[0-9]+$ ]] || emit_error "parse"
+
+# A key that authenticates but whose response we cannot read is not a usable
+# key, so say so rather than reporting success and showing an empty grid.
+(( count > 0 )) || emit_error "no-results"
+
+jq -cn --argjson n "$count" '{ok: true, results: $n}'

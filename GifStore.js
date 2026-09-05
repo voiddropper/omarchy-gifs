@@ -3,13 +3,34 @@
 // Favorites persistence and local matching for the GIF picker. Kept out of
 // Gifs.qml so the parsing rules stay testable with plain node.
 
+// Every provider the picker can talk to, in the order Ctrl+P cycles them.
+var PROVIDERS = ["giphy", "klipy"]
+
+function isProvider(value) {
+  return PROVIDERS.indexOf(String(value || "")) >= 0
+}
+
 function parseConfig(raw) {
   try {
     var data = JSON.parse(String(raw || ""))
     if (!data || typeof data !== "object") return defaultConfig()
+
+    // Keys are stored per provider so switching does not discard the other
+    // one. A flat "apiKey" from an older config seeds the active provider.
+    var keys = {}
+    if (data.apiKeys && typeof data.apiKeys === "object") {
+      for (var i = 0; i < PROVIDERS.length; i++) {
+        var name = PROVIDERS[i]
+        if (typeof data.apiKeys[name] === "string") keys[name] = data.apiKeys[name]
+      }
+    }
+    var provider = isProvider(data.provider) ? data.provider : "giphy"
+    if (!keys[provider] && typeof data.apiKey === "string" && data.apiKey)
+      keys[provider] = data.apiKey
+
     return {
-      provider: data.provider === "klipy" ? "klipy" : "giphy",
-      apiKey: String(data.apiKey || ""),
+      provider: provider,
+      apiKeys: keys,
       contentFilter: String(data.contentFilter || "medium"),
       pasteUrl: data.pasteUrl === "gif" ? "gif" : "page",
       limit: Number(data.limit) > 0 ? Number(data.limit) : 50
@@ -20,7 +41,38 @@ function parseConfig(raw) {
 }
 
 function defaultConfig() {
-  return { provider: "giphy", apiKey: "", contentFilter: "medium", pasteUrl: "page", limit: 50 }
+  return { provider: "giphy", apiKeys: {}, contentFilter: "medium", pasteUrl: "page", limit: 50 }
+}
+
+function serializeConfig(config) {
+  var cfg = config || defaultConfig()
+  return JSON.stringify({
+    provider: cfg.provider,
+    apiKeys: cfg.apiKeys || {},
+    contentFilter: cfg.contentFilter,
+    pasteUrl: cfg.pasteUrl,
+    limit: cfg.limit
+  }, null, 2) + "\n"
+}
+
+function apiKeyFor(config, provider) {
+  var cfg = config || {}
+  var keys = cfg.apiKeys || {}
+  return String(keys[provider || cfg.provider] || "")
+}
+
+// Cycle through PROVIDERS, wrapping in both directions.
+function nextProvider(current, delta) {
+  var at = PROVIDERS.indexOf(String(current || ""))
+  if (at < 0) at = 0
+  var step = Number(delta) || 1
+  var next = (at + step) % PROVIDERS.length
+  if (next < 0) next += PROVIDERS.length
+  return PROVIDERS[next]
+}
+
+function providerCount() {
+  return PROVIDERS.length
 }
 
 // Display name and key-signup location per provider, for the badge and the
@@ -162,6 +214,12 @@ if (typeof module !== "undefined") {
     fuzzyScore: fuzzyScore,
     filterFavorites: filterFavorites,
     providerLabel: providerLabel,
-    providerSignupHint: providerSignupHint
+    providerSignupHint: providerSignupHint,
+    serializeConfig: serializeConfig,
+    apiKeyFor: apiKeyFor,
+    nextProvider: nextProvider,
+    providerCount: providerCount,
+    isProvider: isProvider,
+    PROVIDERS: PROVIDERS
   }
 }
