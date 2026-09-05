@@ -437,13 +437,26 @@ Item {
   }
 
   // ----------------------------------------------------------------- insert
-  function activateIndex(index) {
+  function activateIndex(index, asMedia) {
     if (index < 0 || index >= root.displayItems.length) return
-    root.applySelected(root.displayItems[index])
+    root.applySelected(root.displayItems[index], asMedia === true)
   }
 
-  function applySelected(item) {
+  function applySelected(item, asMedia) {
     if (!item) return
+
+    // Shift sends the GIF itself rather than a link. A link is fine where the
+    // client unfurls it, but somewhere like Teams that just renders a flat
+    // preview, pasting the actual bytes is the only way to get the animation.
+    if (asMedia === true) {
+      var media = item.gifUrl || item.tinyGifUrl
+      if (!media) return
+      root.dismiss()
+      Quickshell.execDetached([root.binDir + "/gif-insert", "--media",
+        String(item.id), String(media), String(root.config.shiftPaste || "gif")])
+      return
+    }
+
     var url = root.config.pasteUrl === "gif"
       ? (item.gifUrl || item.pageUrl)
       : (item.pageUrl || item.gifUrl)
@@ -651,7 +664,8 @@ Item {
             root.selectPage(1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-            if (root.cursorActive && root.displayItems.length > 0) root.activateIndex(root.selectedIndex)
+            if (root.cursorActive && root.displayItems.length > 0)
+              root.activateIndex(root.selectedIndex, (event.modifiers & Qt.ShiftModifier) !== 0)
             else if (root.displayItems.length > 0) root.cursorActive = true
             else if (emptyState.needsKey) root.focusKeyField()
             event.accepted = true
@@ -821,7 +835,7 @@ Item {
                     root.cursorActive = true
                     root.selectedIndex = tile.index
                     if (mouse.button === Qt.RightButton) root.toggleFavorite(tile.modelData)
-                    else root.activateIndex(tile.index)
+                    else root.activateIndex(tile.index, (mouse.modifiers & Qt.ShiftModifier) !== 0)
                   }
                 }
               }
@@ -1002,10 +1016,10 @@ Item {
             opacity: 0.5
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            text: "Enter paste   ·   Ctrl+D favorite   ·   Tab "
+            text: "Enter link   ·   Shift+Enter image   ·   Ctrl+D favorite   ·   Tab "
                 + (root.mode === "favorites" ? "search" : "favorites")
                 + (root.multipleProviders ? "   ·   Ctrl+P " + GifStore.providerLabel(GifStore.nextProvider(root.config.provider, 1)) : "")
-                + "   ·   Ctrl+K key   ·   Esc close"
+                + "   ·   Esc close"
           }
         }
       }

@@ -33,6 +33,7 @@ function parseConfig(raw) {
       apiKeys: keys,
       contentFilter: String(data.contentFilter || "medium"),
       pasteUrl: data.pasteUrl === "gif" ? "gif" : "page",
+      shiftPaste: data.shiftPaste === "file" ? "file" : "gif",
       limit: Number(data.limit) > 0 ? Number(data.limit) : 50
     }
   } catch (e) {
@@ -41,7 +42,8 @@ function parseConfig(raw) {
 }
 
 function defaultConfig() {
-  return { provider: "giphy", apiKeys: {}, contentFilter: "medium", pasteUrl: "page", limit: 50 }
+  return { provider: "giphy", apiKeys: {}, contentFilter: "medium",
+           pasteUrl: "page", shiftPaste: "gif", limit: 50 }
 }
 
 function serializeConfig(config) {
@@ -51,6 +53,7 @@ function serializeConfig(config) {
     apiKeys: cfg.apiKeys || {},
     contentFilter: cfg.contentFilter,
     pasteUrl: cfg.pasteUrl,
+    shiftPaste: cfg.shiftPaste,
     limit: cfg.limit
   }, null, 2) + "\n"
 }

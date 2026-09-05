@@ -76,7 +76,8 @@ is unavailable.
 | `provider`      | `"giphy"`  | `giphy` or `klipy`                                            |
 | `apiKeys`       | `{}`       | `{"giphy": "...", "klipy": "..."}` — one key per provider     |
 | `contentFilter` | `"medium"` | `off`, `low`, `medium`, `high` (mapped onto GIPHY's `r`/`pg-13`/`pg`/`g`) |
-| `pasteUrl`      | `"page"`   | `page` pastes the shareable page link; `gif` pastes the raw `.gif` URL |
+| `pasteUrl`      | `"page"`   | plain paste: `page` sends the shareable page link, `gif` the raw `.gif` URL |
+| `shiftPaste`    | `"gif"`    | shift paste: `gif` copies the image bytes, `file` copies a file reference |
 | `limit`         | `50`       | results per search, clamped to 8–50                           |
 
 Edits apply live — no restart.
@@ -92,7 +93,8 @@ and animate that too; it just renders as an image rather than an unfurled card.
 | type                         | search the provider (300ms debounce)         |
 | `Tab`                        | toggle Favorites ↔ search, keeping the query |
 | arrows / `PageUp` `PageDown` | move the cursor                              |
-| `Enter` / left click         | paste into the focused app                   |
+| `Enter` / left click         | paste a link to the GIF                      |
+| `Shift+Enter` / Shift+click  | paste the GIF **itself**                     |
 | `Ctrl+D` / right click       | toggle favorite                              |
 | `Ctrl+P` / `Ctrl+Shift+P`    | next / previous provider                     |
 | `Ctrl+K`                     | focus the API key field                      |
@@ -102,6 +104,29 @@ and animate that too; it just renders as an image rather than an unfurled card.
 The picker opens on your favorites, so the GIFs you actually reuse are one
 keypress away and cost no network call. Typing switches to the provider;
 clearing the query drops back.
+
+## Link or the GIF itself
+
+`Enter` pastes a link. Chat clients that unfurl one — Slack, Discord, Signal —
+turn it into a playing GIF, and the message stays small.
+
+Some clients don't. Teams renders a link as a flat preview, which rather misses
+the point of sending a GIF. **`Shift+Enter` (or Shift+click) pastes the GIF
+itself**: the full-size file is downloaded and put on the clipboard as
+`image/gif`, so it uploads as a real animated image.
+
+The first shift-paste of a given GIF downloads it (originals run a few MB);
+after that it's cached and instant.
+
+If a client refuses pasted image data but accepts pasted *files*, set
+`"shiftPaste": "file"` and the clipboard carries a `text/uri-list` pointing at
+the cached file instead — the same thing a file manager puts there when you
+copy a file.
+
+> Whether a given client keeps the animation on paste is up to that client:
+> some Electron apps re-encode clipboard images to a static PNG. The clipboard
+> itself carries the GIF intact — verified byte-identical, all frames present —
+> so if one client flattens it, try `"shiftPaste": "file"`.
 
 ## How it works
 
@@ -118,7 +143,8 @@ clearing the query drops back.
   normalization shared by both.
 - `bin/gif-insert` copies the URL and sends `shift+Insert`, the same approach
   `omarchy-menu-emoji-insert` uses. The URL stays on the clipboard afterwards so
-  it lands in clipboard history and can be pasted again.
+  it lands in clipboard history and can be pasted again. With `--media` it
+  downloads the full-size GIF and copies that instead.
 - `bin/gif-cache`, `bin/gif-cached`, `bin/gif-uncache` manage
   `~/.cache/omarchy/gifs`.
 - Favorites are plain JSON at `~/.config/omarchy/gifs/favorites.json`.

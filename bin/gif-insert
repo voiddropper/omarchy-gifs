@@ -1,17 +1,70 @@
 #!/bin/bash
 
-# Copy a GIF URL to the clipboard and paste it into the focused application.
-# Mirrors omarchy-menu-emoji-insert, but leaves the URL on the clipboard
-# afterwards so it lands in clipboard history and can be pasted again.
+# Put a GIF into the focused application.
 #
-# Usage: omarchy-gif-insert <url>
+#   gif-insert <url>
+#       Copies the URL as text and pastes it. Chat clients unfurl it.
+#
+#   gif-insert --media <id> <gif-url> [gif|file]
+#       Downloads the GIF itself and copies the bytes (image/gif) or a file
+#       reference (text/uri-list), then pastes. Use this where a link renders
+#       as a dull preview and you want the animation inline.
+#
+# Either way the clipboard keeps its contents afterwards, so the paste lands in
+# clipboard history and can be repeated.
+
+set -uo pipefail
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
+
+notify() {
+  command -v omarchy-notification-send >/dev/null 2>&1 &&
+    omarchy-notification-send "GIFs" "$1" 2>/dev/null
+}
+
+# Give the compositor a beat to publish the new selection before pasting,
+# otherwise wtype races wl-copy and the old clipboard contents go in.
+paste_now() {
+  sleep 0.15
+  wtype -M shift -k Insert -m shift 2>/dev/null || true
+}
+
+if [[ ${1:-} == "--media" ]]; then
+  id="${2:-}"
+  url="${3:-}"
+  as="${4:-gif}"
+
+  [[ -n $id && -n $url ]] || exit 1
+  # The id becomes a filename, so refuse anything that could escape the cache.
+  [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+
+  mkdir -p "$CACHE_DIR"
+  dest="$CACHE_DIR/$id.full.gif"
+
+  if [[ ! -s $dest ]]; then
+    tmp="$dest.$$.part"
+    if ! curl --silent --fail --location --max-time 45 --output "$tmp" "$url" 2>/dev/null; then
+      rm -f "$tmp"
+      notify "Could not download that GIF"
+      exit 1
+    fi
+    mv -f "$tmp" "$dest"
+  fi
+
+  if [[ $as == "file" ]]; then
+    # A file reference is what a file manager puts on the clipboard, so apps
+    # that accept pasted files treat this as an attachment.
+    printf 'file://%s\n' "$dest" | wl-copy --type text/uri-list
+  else
+    wl-copy --type image/gif <"$dest"
+  fi
+
+  paste_now
+  exit 0
+fi
 
 url="${1:-}"
 [[ -n $url ]] || exit 1
 
 printf '%s' "$url" | wl-copy --type text/plain
-
-# Give the compositor a beat to publish the new selection before pasting,
-# otherwise wtype races wl-copy and the old clipboard content goes in.
-sleep 0.15
-wtype -M shift -k Insert -m shift 2>/dev/null || true
+paste_now
