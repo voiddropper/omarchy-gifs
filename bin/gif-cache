@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Download a favorited GIF's preview and animation into the local cache so
+# favorites still render with no network. Named by Tenor id, so the picker can
+# derive the paths without asking.
+#
+# Usage: omarchy-gif-cache <tenor-id> <preview-url> <tiny-gif-url>
+
+set -uo pipefail
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
+
+id="${1:-}"
+preview_url="${2:-}"
+tiny_url="${3:-}"
+
+[[ -n $id ]] || exit 1
+# The id becomes a filename, so refuse anything that could escape the cache dir.
+[[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+
+mkdir -p "$CACHE_DIR"
+
+fetch() {
+  local url="$1" dest="$2"
+  [[ -n $url ]] || return 0
+  [[ -s $dest ]] && return 0
+  # Download to a temp name and rename, so a killed curl never leaves a
+  # truncated file that later reads as a valid cache hit.
+  local tmp="$dest.$$.part"
+  if curl --silent --fail --location --max-time 20 --output "$tmp" "$url" 2>/dev/null; then
+    mv -f "$tmp" "$dest"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+fetch "$preview_url" "$CACHE_DIR/$id.preview"
+fetch "$tiny_url" "$CACHE_DIR/$id.tiny.gif"
+
+# The picker treats a zero exit as "the animation is on disk now" and points
+# AnimatedImage at it, so a failed download must not report success.
+[[ -s $CACHE_DIR/$id.tiny.gif ]] || exit 1
+
+# The picker caches every GIF the cursor rests on, not just favorites, so the
+# directory would otherwise grow without limit. Trim the oldest entries once it
+# gets large, but never touch anything a favorite still points at.
+prune() {
+  local keep=300 max=400 favorites count
+  favorites="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/gifs/favorites.json"
+
+  count=$(find "$CACHE_DIR" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c)
+  (( count > max )) || return 0
+
+  local protected=""
+  if [[ -f $favorites ]]; then
+    protected=$(jq -r '.items[]?.id // empty' "$favorites" 2>/dev/null)
+  fi
+
+  # Oldest first, skipping any file whose id is a favorite, until we are back
+  # under the keep threshold.
+  local removed=0 target=$(( count - keep )) file base id
+  while IFS= read -r file; do
+    (( removed < target )) || break
+    base=${file##*/}
+    id=${base%.tiny.gif}
+    id=${id%.preview}
+    if [[ -n $protected ]] && grep -qxF "$id" <<<"$protected"; then continue; fi
+    rm -f "$file" && removed=$(( removed + 1 ))
+  done < <(find "$CACHE_DIR" -maxdepth 1 -type f -printf '%T@\t%p\n' 2>/dev/null | sort -n | cut -f2-)
+}
+
+prune

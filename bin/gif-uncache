@@ -1,0 +1,14 @@
+#!/bin/bash
+
+# Drop a GIF's cached media when it stops being a favorite.
+# Usage: omarchy-gif-uncache <tenor-id>
+
+set -uo pipefail
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
+
+id="${1:-}"
+[[ -n $id ]] || exit 1
+[[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+
+rm -f "$CACHE_DIR/$id.preview" "$CACHE_DIR/$id.tiny.gif"

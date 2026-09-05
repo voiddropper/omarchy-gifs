@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Copy a GIF URL to the clipboard and paste it into the focused application.
+# Mirrors omarchy-menu-emoji-insert, but leaves the URL on the clipboard
+# afterwards so it lands in clipboard history and can be pasted again.
+#
+# Usage: omarchy-gif-insert <url>
+
+url="${1:-}"
+[[ -n $url ]] || exit 1
+
+printf '%s' "$url" | wl-copy --type text/plain
+
+# Give the compositor a beat to publish the new selection before pasting,
+# otherwise wtype races wl-copy and the old clipboard content goes in.
+sleep 0.15
+wtype -M shift -k Insert -m shift 2>/dev/null || true

@@ -1,0 +1,27 @@
+#!/bin/bash
+
+# Report which GIFs are already in the local cache, so the picker can point at
+# local files directly instead of letting every tile probe for a file that may
+# not be there and log a warning when it isn't.
+#
+# Output: {"anim":["<id>",...],"still":["<id>",...]}
+
+set -uo pipefail
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
+
+if [[ ! -d $CACHE_DIR ]]; then
+  echo '{"anim":[],"still":[]}'
+  exit 0
+fi
+
+anim=$(find "$CACHE_DIR" -maxdepth 1 -type f -name '*.tiny.gif' -size +0 -printf '%f\n' 2>/dev/null | sed 's/\.tiny\.gif$//')
+still=$(find "$CACHE_DIR" -maxdepth 1 -type f -name '*.preview' -size +0 -printf '%f\n' 2>/dev/null | sed 's/\.preview$//')
+
+jq -cn \
+  --arg anim "$anim" \
+  --arg still "$still" '
+  {
+    anim:  ($anim  | split("\n") | map(select(length > 0))),
+    still: ($still | split("\n") | map(select(length > 0)))
+  }'

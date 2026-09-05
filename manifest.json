@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "voiddropper.gifs",
+  "name": "GIFs",
+  "version": "1.0.0",
+  "author": "voiddropper",
+  "description": "Search GIPHY or KLIPY, favorite GIFs, and paste them into the focused app",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Gifs.qml"
+  }
+}
