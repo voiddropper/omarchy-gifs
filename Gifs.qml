@@ -89,13 +89,22 @@ Item {
 
   property int cardWidth: Math.min(Style.space(920), panel.width - Style.gapsOut * 2)
   property int cardHeight: Math.min(Style.space(640), panel.height - Style.gapsOut * 2)
-  readonly property int gridWidth: cardWidth - contentMargin * 2
+  // The card's border sits inside cardWidth, so the row the grid actually gets
+  // is contentMargin *and* the border narrower on each side. Measuring the
+  // card's own insets keeps columns * cellWidth from overflowing by those few
+  // pixels, which would wrap the last column onto its own row.
+  readonly property int gridWidth: Math.floor(cardWidth - card.contentLeftInset - card.contentRightInset)
 
   // Aim for roughly 250px tiles and divide the row evenly, so the grid never
   // leaves a ragged gutter on the right regardless of card width.
   property int columns: Math.max(2, Math.floor(gridWidth / Style.space(250)))
   property int cellWidth: Math.max(Style.space(80), Math.floor(gridWidth / columns))
   property int cellHeight: Math.round(cellWidth * 3 / 4)
+
+  // What the GridView actually lays out, which is what row navigation has to
+  // step by. It matches `columns` for any normal card width, but a card too
+  // narrow for the cellWidth floor above fits fewer tiles per row than asked.
+  readonly property int gridColumns: Math.max(1, Math.floor(resultGrid.width / Math.max(1, resultGrid.cellWidth)))
 
   // ------------------------------------------------------------- lifecycle
   function open(payloadJson) {
@@ -362,35 +371,43 @@ Item {
     resultGrid.positionViewAtIndex(root.selectedIndex, GridView.Contain)
   }
 
-  function selectRow(delta) {
+  // Move by whole rows, keeping the same column so the cursor lands on the
+  // tile the user can see directly above or below it. Clamping the raw index
+  // to the list instead would slide the cursor sideways at both ends -- Up on
+  // the top row would walk to index 0, one column at a time.
+  //
+  // Off either end, arrow keys wrap to the opposite row the way Left/Right
+  // already wrap around the list; paging stops at the first or last row,
+  // since a page jump that lands on the far end reads as a scroll gone wrong.
+  function selectRowBy(rows, wrap) {
     if (root.displayItems.length === 0) return
     if (!root.cursorActive) {
       root.cursorActive = true
-      root.selectedIndex = delta < 0 ? root.displayItems.length - 1 : 0
+      root.selectedIndex = rows < 0 ? root.displayItems.length - 1 : 0
       resultGrid.positionViewAtIndex(root.selectedIndex, GridView.Contain)
       return
     }
-    var next = root.selectedIndex + delta * root.columns
-    if (next < 0) next = 0
-    if (next >= root.displayItems.length) next = root.displayItems.length - 1
+
+    var cols = root.gridColumns
+    var lastRow = Math.floor((root.displayItems.length - 1) / cols)
+    var targetRow = Math.floor(root.selectedIndex / cols) + rows
+
+    if (targetRow < 0) targetRow = wrap ? lastRow : 0
+    else if (targetRow > lastRow) targetRow = wrap ? 0 : lastRow
+
+    // A short final row has no tile in this column, so take its nearest one.
+    var next = Math.min(targetRow * cols + (root.selectedIndex % cols), root.displayItems.length - 1)
     root.selectedIndex = next
     resultGrid.positionViewAtIndex(root.selectedIndex, GridView.Contain)
   }
 
+  function selectRow(delta) {
+    root.selectRowBy(delta, true)
+  }
+
   function selectPage(delta) {
-    if (root.displayItems.length === 0) return
-    if (!root.cursorActive) {
-      root.cursorActive = true
-      root.selectedIndex = delta < 0 ? root.displayItems.length - 1 : 0
-      resultGrid.positionViewAtIndex(root.selectedIndex, GridView.Contain)
-      return
-    }
     var visibleRows = Math.max(1, Math.floor(resultGrid.height / root.cellHeight))
-    var next = root.selectedIndex + delta * root.columns * visibleRows
-    if (next < 0) next = 0
-    if (next >= root.displayItems.length) next = root.displayItems.length - 1
-    root.selectedIndex = next
-    resultGrid.positionViewAtIndex(root.selectedIndex, GridView.Contain)
+    root.selectRowBy(delta * visibleRows, false)
   }
 
   // ------------------------------------------------------------- favorites
