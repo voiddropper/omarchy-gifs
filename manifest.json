@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "voiddropper.gifs",
   "name": "GIFs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "voiddropper",
   "description": "Search GIPHY or KLIPY, favorite GIFs, and paste them into the focused app",
   "kinds": [

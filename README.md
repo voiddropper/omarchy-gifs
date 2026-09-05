@@ -30,6 +30,21 @@ o.bind("SUPER + CTRL + G", "GIFs", "omarchy-shell shell toggle voiddropper.gifs"
 Check the key is free first with `omarchy menu keybindings --print` — note that
 plain `SUPER + G` is taken by default (toggle window grouping).
 
+## Remove
+
+```bash
+omarchy plugin remove voiddropper.gifs
+```
+
+That leaves your API key, favorites, and cached stills on disk in case you
+reinstall. To clear those too:
+
+```bash
+rm -rf ~/.config/omarchy/gifs ~/.cache/omarchy/gifs
+```
+
+Then drop the keybinding you added to `~/.config/hypr/bindings.lua`.
+
 ## API key
 
 You don't have to edit any JSON. Open the picker, start typing, and if there's
