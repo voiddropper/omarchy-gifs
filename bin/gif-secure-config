@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# Make the directory holding the API key private, and keep it that way.
+#
+# The picker writes config.json through Quickshell's FileView, which does an
+# atomic write: a temp file created under the process umask, then a rename. So
+# chmod on config.json alone always leaves a window where a fresh inode sits
+# there at whatever the umask allowed -- 644 on a default Omarchy install.
+# Tightening the *directory* is what actually closes it, since nobody else can
+# traverse in to reach either file. The file mode is set too, for the case
+# where the directory is shared with something else.
+
+set -uo pipefail
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/gifs"
+
+mkdir -p "$CONFIG_DIR" 2>/dev/null || exit 0
+chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+[[ -f $CONFIG_DIR/config.json ]] && chmod 600 "$CONFIG_DIR/config.json" 2>/dev/null
+exit 0

@@ -68,4 +68,8 @@ err=$(gif_status_error "$provider" "$status")
 [[ -z $err ]] || emit_error "$err"
 [[ -n $body ]] || emit_error "empty-response"
 
-jq -c "$REQ_NORMALIZE" <<<"$body" 2>/dev/null || emit_error "parse"
+# Normalize, then drop anything pointing off the media allowlist before the
+# picker ever sees it.
+jq -c --argjson doms "$(gif_media_domains_json)" \
+  "$GIF_RESULT_DEFS $REQ_NORMALIZE | $GIF_RESULT_FILTER" <<<"$body" 2>/dev/null \
+  || emit_error "parse"

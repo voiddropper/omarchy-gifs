@@ -85,6 +85,37 @@ gif_url_allowed() {
   gif_host_allowed "$host"
 }
 
+# The allowlist as JSON, for the jq filter below.
+gif_media_domains_json() {
+  gif_load_media_domains
+  printf '%s\n' "${GIF_MEDIA_DOMAINS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+# Drop results carrying a URL we would not fetch. The picker's own Image
+# elements load previewUrl directly, which does not go through gif_fetch_media,
+# so filtering here is what keeps the shell process from being pointed at an
+# arbitrary host by a hostile response. Host parsing matches gif_url_host:
+# https only, and no userinfo, so media0.giphy.com@evil.example does not pass.
+#
+# Expects the allowlist in $doms. pageUrl is allowed to be empty because the
+# picker falls back to gifUrl for it.
+GIF_RESULT_DEFS='
+  def gif_host:
+    (capture("^https://(?<h>[A-Za-z0-9.-]+)(?::[0-9]+)?(?:/|$)").h | ascii_downcase)? // null;
+  def gif_allowed:
+    gif_host as $h
+    | ($h != null)
+      and ($doms | map(. as $d | ($h == $d) or ($h | endswith("." + $d))) | any);
+'
+GIF_RESULT_FILTER='
+  .results |= map(select(
+    (.previewUrl | gif_allowed)
+    and (.tinyGifUrl | gif_allowed)
+    and (.gifUrl | gif_allowed)
+    and ((.pageUrl // "") == "" or (.pageUrl | gif_allowed))
+  ))
+'
+
 # Quote a value for curl's --config format, which understands \\ \" \t \r \n
 # inside double quotes. Escaping the backslash first matters, and escaping the
 # real control characters matters because a literal newline inside a value

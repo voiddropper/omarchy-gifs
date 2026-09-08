@@ -171,6 +171,8 @@ GIF waits; originals run a few MB.
   normalization shared by both.
 - `bin/gif-net.sh` holds the network policy both of them and the cache scripts
   go through — see [Network limits](#network-limits).
+- `bin/gif-secure-config` keeps `~/.config/omarchy/gifs` at mode 700, since
+  that is where the API key is stored.
 - `bin/gif-insert` copies the URL and sends `shift+Insert`, the same approach
   `omarchy-menu-emoji-insert` uses. The URL stays on the clipboard afterwards so
   it lands in clipboard history and can be pasted again. With `--media` it
@@ -235,6 +237,25 @@ even though the bytes already arrived; a download that fails either check, or
 the byte cap, is deleted rather than left in the cache. If your provider serves
 media from somewhere else, add it with `allowedMediaDomains` in `config.json`
 rather than loosening the check.
+
+The same allowlist is applied to the **results** in `gif-search`, so a result
+carrying an off-allowlist URL is dropped before the picker sees it. That matters
+because the picker's `Image` elements load `previewUrl` themselves rather than
+going through the download path, and they cap what they will decode
+(`sourceSize`) for the same reason the downloads are byte-capped.
+
+`shiftPaste=png` pins the ImageMagick reader to `gif:` instead of letting
+ImageMagick choose a coder by sniffing the file. The bytes came off the
+network, so the format is ours to declare — otherwise a response that is not
+really a GIF gets decoded by whichever coder matches it, and some of those
+reach delegates. ImageMagick also runs under explicit memory, map and area
+limits.
+
+The API key is stored in `~/.config/omarchy/gifs/config.json`, and that
+directory is kept at mode **700** (the file at 600). Tightening the directory
+rather than just the file is deliberate: the picker saves through Quickshell's
+`FileView`, whose atomic write replaces the file with a fresh inode created
+under the process umask, so a mode on the file alone would not survive a save.
 
 ## Hacking
 

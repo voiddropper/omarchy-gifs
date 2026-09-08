@@ -32,6 +32,11 @@ Item {
   }
   readonly property string binDir: pluginDir + "/bin"
 
+  // The API key lives in configDir, so make sure nobody else can traverse in.
+  // Run at startup as well as after every save, because FileView's atomic
+  // write replaces the file with a fresh inode created under our umask.
+  Component.onCompleted: Quickshell.execDetached([root.binDir + "/gif-secure-config"])
+
   property bool opened: false
   property string filterText: ""
   property int selectedIndex: 0
@@ -168,6 +173,7 @@ Item {
   function saveConfig(next) {
     root.config = next
     configFile.setText(GifStore.serializeConfig(next))
+    Quickshell.execDetached([root.binDir + "/gif-secure-config"])
   }
 
   function cycleProvider(delta) {
@@ -799,6 +805,11 @@ Item {
                   asynchronous: true
                   cache: true
                   visible: !tile.animReady
+                  // A bound on what gets decoded, not a resize: an image
+                  // smaller than this is untouched, and provider previews are
+                  // ~200px. Without it a single crafted response could hand
+                  // the shell process an arbitrarily large image to decode.
+                  sourceSize: Qt.size(1024, 1024)
                   source: (tile.localStill !== "" && !tile.stillFellBack) ? tile.localStill : tile.modelData.previewUrl
                   onStatusChanged: {
                     if (status === Image.Error && !tile.stillFellBack && tile.localStill !== "")

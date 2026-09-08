@@ -94,10 +94,16 @@ if [[ ${1:-} == "--media" ]]; then
         notify "shiftPaste=png needs imagemagick"
         exit 1
       fi
-      # Resource limits so a crafted or simply enormous GIF cannot turn a
-      # paste into an out-of-memory event: the first frame is all we need.
+      # "gif:" pins the reader. Without it ImageMagick picks a coder by
+      # sniffing the content, so a response that is not really a GIF would be
+      # decoded by whichever coder matches -- SVG, MVG, EPS -- and some of
+      # those reach delegates. These bytes came off the network, so the format
+      # is ours to declare, not the file's to suggest.
+      #
+      # The resource limits are so that a crafted or simply enormous GIF
+      # cannot turn a paste into an out-of-memory event: we want frame one.
       if ! magick -limit memory 256MiB -limit map 512MiB -limit area 128MP \
-        "$dest[0]" png:- 2>/dev/null | wl-copy --type image/png; then
+        "gif:$dest[0]" png:- 2>/dev/null | wl-copy --type image/png; then
         notify "Could not convert that GIF"
         exit 1
       fi
