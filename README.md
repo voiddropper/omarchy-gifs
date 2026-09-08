@@ -94,6 +94,7 @@ is unavailable.
 | `pasteUrl`      | `"page"`   | plain paste: `page` sends the shareable page link, `gif` the raw `.gif` URL |
 | `shiftPaste`    | `"html"`   | shift paste: `html`, `png`, `gif` or `file` — see below       |
 | `limit`         | `50`       | results per search, clamped to 8–50                           |
+| `allowedMediaDomains` | `[]` | extra domains media may be downloaded from, on top of `giphy.com` and `klipy.com` |
 
 Edits apply live — no restart.
 
@@ -157,16 +158,19 @@ GIF waits; originals run a few MB.
 ## How it works
 
 - `bin/gif-search` queries the provider and normalizes both response shapes into
-  one. The API key is read from disk inside the script, so it never appears in
-  the process table or in the shell's QML. Adding a provider means one `case`
-  arm in `gif-providers.sh` and adding it to `PROVIDERS` in `GifStore.js` —
-  the UI, the key field, and `Ctrl+P` pick it up from there.
+  one. The API key is read from disk inside the script and handed to curl on
+  stdin, so it never appears in the process table or in the shell's QML.
+  Adding a provider means one `case` arm in `gif-providers.sh` and adding it to
+  `PROVIDERS` in `GifStore.js` — the UI, the key field, and `Ctrl+P` pick it up
+  from there.
 - `bin/gif-check` verifies a key before it is written to disk. The key arrives
   on **stdin, never argv**, so it stays out of the process table — the same
   reason Omarchy's wifi panel pipes passphrases in rather than passing them as
   arguments.
 - `bin/gif-providers.sh` holds the per-provider request building and response
   normalization shared by both.
+- `bin/gif-net.sh` holds the network policy both of them and the cache scripts
+  go through — see [Network limits](#network-limits).
 - `bin/gif-insert` copies the URL and sends `shift+Insert`, the same approach
   `omarchy-menu-emoji-insert` uses. The URL stays on the clipboard afterwards so
   it lands in clipboard history and can be pasted again. With `--media` it
@@ -194,6 +198,43 @@ static frame standing in until then.
 That cache is also why favorites render with no network at all. It prunes back
 to 300 entries once it passes 400, oldest first, and never removes anything a
 favorite still points at.
+
+### Network limits
+
+Two rules apply to every request the plugin makes, and they are worth knowing
+if you change this code.
+
+**Credentials never reach curl's argv.** `/proc/<pid>/cmdline` is world
+readable, so a key passed as an argument is readable by any process on the
+machine for as long as the request runs. `gif-search` and `gif-check` build the
+whole request — endpoint, key, search term — into a curl `--config` document
+and feed it to curl on **stdin**. `gif-check` additionally takes the key on
+stdin from the picker, so an unsaved key never touches disk either. Keys are
+also checked against `[A-Za-z0-9._~-]{8,128}` before use, which is what makes it
+safe to interpolate KLIPY's key into a URL path — their API takes it as a path
+segment and offers no header or query form, so that one URL is kept out of argv
+and out of any diagnostic output rather than being made harmless.
+
+**Responses and downloads are capped, and hosts are checked.** Search
+responses and media are attacker-influenced — a hostile redirect, a compromised
+CDN, or just a provider bug — so nothing is parsed, cached, or handed to
+ImageMagick before its size and origin have been checked:
+
+| limit                     | default | override                    |
+|---------------------------|---------|-----------------------------|
+| search response           | 2 MB    | `GIF_MAX_RESPONSE_BYTES`    |
+| full GIF download         | 16 MB   | `GIF_MAX_MEDIA_BYTES`       |
+| preview / thumbnail       | 8 MB    | `GIF_MAX_PREVIEW_BYTES`     |
+| search timeout            | 12 s    | `GIF_MAX_RESPONSE_SECONDS`  |
+| media timeout             | 45 s    | `GIF_MAX_MEDIA_SECONDS`     |
+
+Media is downloaded over HTTPS only, from `giphy.com` and `klipy.com`
+subdomains. The host is checked before the request and the **post-redirect**
+URL is checked again afterwards, so a redirect off those domains is refused
+even though the bytes already arrived; a download that fails either check, or
+the byte cap, is deleted rather than left in the cache. If your provider serves
+media from somewhere else, add it with `allowedMediaDomains` in `config.json`
+rather than loosening the check.
 
 ## Hacking
 

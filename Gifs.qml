@@ -904,6 +904,8 @@ Item {
                     return root.providerLabel + " rate limit reached — try again shortly"
                   if (root.searchError === "bad-provider")
                     return "Unknown provider in config.json — use \"giphy\" or \"klipy\""
+                  if (root.searchError === "too-large")
+                    return root.providerLabel + " sent more than we will read — try again"
                   return root.providerLabel + " request failed (" + root.searchError + ")"
                 }
                 if (root.mode === "favorites" && root.filterText)
@@ -1000,6 +1002,7 @@ Item {
                   case "rate-limit": return root.providerLabel + " rate limit reached — try again shortly"
                   case "network": return "Could not reach " + root.providerLabel + " — check your connection"
                   case "no-results": return "The key worked but returned nothing readable"
+                  case "too-large": return root.providerLabel + " sent more than we will read"
                   default: return "Check failed (" + root.keyCheckState + ")"
                 }
               }

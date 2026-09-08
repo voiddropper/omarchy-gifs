@@ -15,6 +15,10 @@
 
 set -uo pipefail
 
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gif-net.sh
+source "$HERE/gif-net.sh"
+
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
 
 notify() {
@@ -29,20 +33,32 @@ paste_now() {
   wtype -M shift -k Insert -m shift 2>/dev/null || true
 }
 
-# Fetch the GIF into the cache and echo its path.
+# Fetch the GIF into the cache and echo its path. gif_fetch_media enforces the
+# host allowlist and the byte cap, so what lands in the cache -- and what is
+# handed to ImageMagick below -- is bounded and came from the provider.
 fetch_gif() {
   local id="$1" url="$2" dest="$CACHE_DIR/$id.full.gif"
 
   mkdir -p "$CACHE_DIR"
   if [[ ! -s $dest ]]; then
-    local tmp="$dest.$$.part"
-    if ! curl --silent --fail --location --max-time 45 --output "$tmp" "$url" 2>/dev/null; then
-      rm -f "$tmp"
-      return 1
-    fi
-    mv -f "$tmp" "$dest"
+    gif_fetch_media "$url" "$dest" "$GIF_MAX_MEDIA_BYTES" || return 1
   fi
   printf '%s' "$dest"
+}
+
+# Escape for an HTML attribute. The URL comes from a provider response, so it
+# is not ours to trust: an unescaped quote would end the src attribute and let
+# the response put markup of its choosing on the clipboard.
+html_escape() {
+  local s="$1"
+  # The replacements are quoted because bash 5.2's patsub_replacement expands a
+  # bare & in a replacement to the text that matched, which would turn "<" into
+  # "<lt;" instead of "&lt;".
+  s=${s//&/"&amp;"}
+  s=${s//</"&lt;"}
+  s=${s//>/"&gt;"}
+  s=${s//\"/"&quot;"}
+  printf '%s' "$s"
 }
 
 if [[ ${1:-} == "--media" ]]; then
@@ -53,6 +69,12 @@ if [[ ${1:-} == "--media" ]]; then
   [[ -n $id && -n $url ]] || exit 1
   # The id becomes a filename, so refuse anything that could escape the cache.
   [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
+  # Every mode below either downloads this URL or puts it somewhere the
+  # receiving application will fetch it from, so check it once here.
+  if ! gif_url_allowed "$url"; then
+    notify "That GIF is not on an allowed provider host"
+    exit 1
+  fi
 
   # wl-copy serves exactly one MIME type per invocation, so each mode is a
   # different bet about what the receiving app asks the clipboard for.
@@ -61,7 +83,7 @@ if [[ ${1:-} == "--media" ]]; then
       # What a browser puts on the clipboard when you copy an image: HTML with
       # a remote <img>. Rich compose boxes (Teams, and most webmail) fetch the
       # URL, which keeps the animation. Needs no download, so it is instant.
-      printf '<img src="%s">' "$url" | wl-copy --type text/html
+      printf '<img src="%s">' "$(html_escape "$url")" | wl-copy --type text/html
       ;;
 
     png)
@@ -72,7 +94,10 @@ if [[ ${1:-} == "--media" ]]; then
         notify "shiftPaste=png needs imagemagick"
         exit 1
       fi
-      if ! magick "$dest[0]" png:- 2>/dev/null | wl-copy --type image/png; then
+      # Resource limits so a crafted or simply enormous GIF cannot turn a
+      # paste into an out-of-memory event: the first frame is all we need.
+      if ! magick -limit memory 256MiB -limit map 512MiB -limit area 128MP \
+        "$dest[0]" png:- 2>/dev/null | wl-copy --type image/png; then
         notify "Could not convert that GIF"
         exit 1
       fi
@@ -100,6 +125,10 @@ fi
 
 url="${1:-}"
 [[ -n $url ]] || exit 1
+if ! gif_url_allowed "$url"; then
+  notify "That link is not on an allowed provider host"
+  exit 1
+fi
 
 printf '%s' "$url" | wl-copy --type text/plain
 paste_now

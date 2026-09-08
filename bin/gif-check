@@ -30,10 +30,22 @@ api_key="${api_key%"${api_key##*[![:space:]]}"}"
 
 # A real query with the provider's minimum page size: enough to prove the key
 # is accepted and that results come back in the shape we expect.
-gif_build_request "$provider" "$api_key" "search" "test" 8 "medium" \
-  || emit_error "bad-provider"
+gif_build_request "$provider" "$api_key" "search" "test" 8 "medium"
+case $? in
+  0) ;;
+  # A key with characters we will not put in a request is rejected here rather
+  # than being written to disk to fail on every later search.
+  2) emit_error "bad-key" ;;
+  *) emit_error "bad-provider" ;;
+esac
 
-raw=$(gif_http_get "${REQ_ARGS[@]}") || emit_error "network"
+raw=$(gif_http_get "$REQ_REQUEST")
+case $? in
+  0) ;;
+  2) emit_error "too-large" ;;
+  *) emit_error "network" ;;
+esac
+
 status="${raw##*$'\n'}"
 body="${raw%$'\n'*}"
 

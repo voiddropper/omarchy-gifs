@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Query the configured GIF provider and print a normalized result list.
-# The API key is read from disk here and never passed as an argument, so it
-# stays out of the process table and out of the shell's QML.
+# The API key is read from disk here and reaches curl through --config on
+# stdin, never as an argument, so it stays out of the process table and out of
+# the shell's QML. The response is size-capped before it is parsed.
 #
 # Usage: gif-search <query>   |   gif-search --featured
 # Output: {"ok":true,"results":[...]}  or  {"ok":false,"error":"<code>"}
@@ -46,10 +47,20 @@ else
   [[ -n $query ]] || emit_error "empty-query"
 fi
 
-gif_build_request "$provider" "$api_key" "$mode" "$query" "$limit" "$content_filter" \
-  || emit_error "bad-provider"
+gif_build_request "$provider" "$api_key" "$mode" "$query" "$limit" "$content_filter"
+case $? in
+  0) ;;
+  2) emit_error "bad-key" ;;
+  *) emit_error "bad-provider" ;;
+esac
 
-raw=$(gif_http_get "${REQ_ARGS[@]}") || emit_error "network"
+raw=$(gif_http_get "$REQ_REQUEST")
+case $? in
+  0) ;;
+  2) emit_error "too-large" ;;
+  *) emit_error "network" ;;
+esac
+
 status="${raw##*$'\n'}"
 body="${raw%$'\n'*}"
 

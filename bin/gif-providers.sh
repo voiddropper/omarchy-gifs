@@ -3,15 +3,27 @@
 # Shared provider definitions for gif-search and gif-check.
 #
 # gif_build_request <provider> <key> <mode> <query> <limit> <content_filter>
-#   sets REQ_ARGS (curl argv) and REQ_NORMALIZE (jq program), or returns 1 for
-#   an unknown provider. The key is only ever placed in the request itself --
-#   callers keep it out of their own argv.
+#   sets REQ_REQUEST (a curl --config document) and REQ_NORMALIZE (a jq
+#   program). Returns 1 for an unknown provider, 2 for a key we will not put
+#   into a request.
+#
+# The whole request lives in REQ_REQUEST and is fed to curl on stdin by
+# gif_http_get, so neither the key nor the search term ever reaches an argv.
+
+HERE_PROVIDERS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gif-net.sh
+source "$HERE_PROVIDERS/gif-net.sh"
 
 GIF_PROVIDERS=(giphy klipy)
 
 gif_build_request() {
   local provider="$1" key="$2" mode="$3" query="$4" limit="$5" content_filter="$6"
   local endpoint rating
+
+  # Both providers issue alphanumeric keys. Insisting on that is what makes it
+  # safe to interpolate KLIPY's key into a URL path: a key containing "/", "?"
+  # or ".." would otherwise be able to retarget the request.
+  [[ $key =~ ^[A-Za-z0-9._~-]{8,128}$ ]] || return 2
 
   case "$provider" in
     giphy)
@@ -30,11 +42,13 @@ gif_build_request() {
         endpoint="https://api.giphy.com/v1/gifs/search"
       fi
 
-      REQ_ARGS=(--get "$endpoint"
-        --data-urlencode "api_key=$key"
-        --data-urlencode "limit=$limit"
-        --data-urlencode "rating=$rating")
-      [[ -n $query ]] && REQ_ARGS+=(--data-urlencode "q=$query")
+      REQ_REQUEST="url = $(gif_cfg_quote "$endpoint")
+get
+data-urlencode = $(gif_cfg_quote "api_key=$key")
+data-urlencode = $(gif_cfg_quote "limit=$limit")
+data-urlencode = $(gif_cfg_quote "rating=$rating")"
+      [[ -n $query ]] && REQ_REQUEST+="
+data-urlencode = $(gif_cfg_quote "q=$query")"
 
       REQ_NORMALIZE='
         {
@@ -58,18 +72,23 @@ gif_build_request() {
 
     klipy)
       # KLIPY takes the key as a path segment and uses the same filter names.
+      # The path is the one place a credential unavoidably sits in a URL --
+      # their API has no header or query form -- so the mitigation is to keep
+      # that URL out of argv and out of any diagnostic output.
       if [[ $mode == "featured" ]]; then
         endpoint="https://api.klipy.com/api/v1/$key/gifs/trending"
       else
         endpoint="https://api.klipy.com/api/v1/$key/gifs/search"
       fi
 
-      REQ_ARGS=(--get "$endpoint"
-        --data-urlencode "per_page=$limit"
-        --data-urlencode "page=1"
-        --data-urlencode "content_filter=$content_filter"
-        --data-urlencode "format_filter=gif,jpg")
-      [[ -n $query ]] && REQ_ARGS+=(--data-urlencode "q=$query")
+      REQ_REQUEST="url = $(gif_cfg_quote "$endpoint")
+get
+data-urlencode = $(gif_cfg_quote "per_page=$limit")
+data-urlencode = $(gif_cfg_quote "page=1")
+data-urlencode = $(gif_cfg_quote "content_filter=$content_filter")
+data-urlencode = $(gif_cfg_quote "format_filter=gif,jpg")"
+      [[ -n $query ]] && REQ_REQUEST+="
+data-urlencode = $(gif_cfg_quote "q=$query")"
 
       # KLIPY nests the item list at .data.data and offers hd/md/sm renditions.
       # There is no shareable page URL in the response, so pageUrl is the direct
@@ -98,13 +117,6 @@ gif_build_request() {
       return 1
       ;;
   esac
-}
-
-# Ask curl for the status code on its own last line, so an auth failure can be
-# reported as such instead of collapsing into a generic network error.
-gif_http_get() {
-  curl --silent --show-error --location --max-time 12 \
-    --write-out $'\n%{http_code}' "$@" 2>/dev/null
 }
 
 # Translate an HTTP status into one of the picker's error codes, or "" for OK.
