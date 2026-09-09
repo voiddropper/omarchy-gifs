@@ -225,11 +225,13 @@ gif_prune_cache() {
 # "never more than cap + 1 bytes reach the disk" is a property a test can
 # measure directly, on a transfer still in progress.
 #
-# head is what makes that bound exact. Recent curl does abort a chunked
-# transfer once --max-filesize is passed, but it notices only after handing us
-# a buffer, so the file overshoots by however much that buffer held; older curl
-# does not check an undeclared length at all. Closing the pipe at cap + 1 puts
-# the limit on our side of the boundary either way.
+# The head -c is belt and braces, and it is worth being honest about which:
+# curl already aborts an unknown-size transfer when it reaches --max-filesize
+# -- that is documented, and on 8.21 it is exact, with no overshoot. Closing
+# the pipe at cap + 1 puts the limit on our side of the boundary anyway, so it
+# holds whatever a given curl does with the flag, and so the test can assert a
+# byte count rather than trust an option that has had edge cases (curl#14899
+# counted bodies that redirect handling throws away).
 #
 # Sets GIF_STREAM_RC (curl) and GIF_STREAM_WRITE_RC (the write side). Both
 # matter: curl can flush a short body into the pipe and exit 0 while the write

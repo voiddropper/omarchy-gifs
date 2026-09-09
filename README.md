@@ -252,13 +252,20 @@ and a response that never ends while staying under the cap is ended by the
 timeouts instead.
 
 Worth being accurate about, since it decides how much the `head -c` is really
-doing: curl 8.21 enforces `--max-filesize` *during* a chunked transfer with no
-`Content-Length`, and stops at exactly the limit —
-`tests/run-tests.sh` measures this. So on a current curl, `--max-filesize`
-alone would already hold. The bound is written this way regardless, because
-that behaviour is curl's to change and older curl does not check an undeclared
-length at all; here the limit is enforced on our side of the boundary and the
-test asserts the byte count rather than trusting the flag.
+doing: **`--max-filesize` alone would already hold here.** Aborting an
+unknown-size transfer once it reaches the limit is curl's documented behaviour —
+"such transfers thus are then aborted first when they actually reach that
+limit" — and on curl 8.21 it is exact, stopping at the cap with no overshoot
+for every piece size and cap tried. `tests/run-tests.sh` measures that and
+prints it.
+
+So this is belt and braces, not a hole being closed. It is written this way
+because the bound is then ours rather than a flag's: `--max-filesize` has had
+edge cases where it did not mean what it appeared to (curl#14899 counted
+response bodies that redirect handling discards), and the test can assert a
+byte count instead of trusting an option. The refactor also paid for itself by
+surfacing a real bug — the write side's exit status was being dropped, so a
+truncated file could be published as a complete one.
 
 Media is downloaded over HTTPS only, from `giphy.com` and `klipy.com`
 subdomains. The host is checked before the request and the **post-redirect**
