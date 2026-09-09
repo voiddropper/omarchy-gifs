@@ -171,6 +171,9 @@ GIF waits; originals run a few MB.
   normalization shared by both.
 - `bin/gif-net.sh` holds the network policy both of them and the cache scripts
   go through — see [Network limits](#network-limits).
+- `bin/gif-preview` pulls result previews into the cache through the same
+  bounded downloader, so the picker can render local files instead of letting
+  Qt fetch provider URLs.
 - `bin/gif-secure-config` keeps `~/.config/omarchy/gifs` at mode 700, since
   that is where the API key is stored.
 - `bin/gif-insert` copies the URL and sends `shift+Insert`, the same approach
@@ -197,6 +200,10 @@ downloads its GIF on the way past (150ms debounced, so arrowing along a row
 doesn't fire a download per tile) and starts animating once it lands, with the
 static frame standing in until then.
 
+The static frames come from disk too, and for a different reason: a remote URL
+handed to `Image` is fetched on Qt's terms, with none of our limits on it. See
+[Network limits](#network-limits).
+
 That cache is also why favorites render with no network at all. It prunes back
 to 300 entries once it passes 400, oldest first, and never removes anything a
 favorite still points at.
@@ -217,10 +224,10 @@ safe to interpolate KLIPY's key into a URL path — their API takes it as a path
 segment and offers no header or query form, so that one URL is kept out of argv
 and out of any diagnostic output rather than being made harmless.
 
-**Responses and downloads are capped, and hosts are checked.** Search
-responses and media are attacker-influenced — a hostile redirect, a compromised
-CDN, or just a provider bug — so nothing is parsed, cached, or handed to
-ImageMagick before its size and origin have been checked:
+**Responses and downloads are capped while they arrive, and hosts are
+checked.** Search responses and media are attacker-influenced — a hostile
+redirect, a compromised CDN, or just a provider bug — so nothing is parsed,
+cached, or handed to ImageMagick before its size and origin have been checked:
 
 | limit                     | default | override                    |
 |---------------------------|---------|-----------------------------|
@@ -229,6 +236,29 @@ ImageMagick before its size and origin have been checked:
 | preview / thumbnail       | 8 MB    | `GIF_MAX_PREVIEW_BYTES`     |
 | search timeout            | 12 s    | `GIF_MAX_RESPONSE_SECONDS`  |
 | media timeout             | 45 s    | `GIF_MAX_MEDIA_SECONDS`     |
+| connect timeout           | 8 s     | `GIF_CONNECT_TIMEOUT`       |
+
+`GIF_CA_BUNDLE` verifies against *only* the bundle you name, replacing the
+system trust store rather than adding to it — curl's `--cacert` semantics. It
+is there for the test suite's local HTTPS server; pointing it at a corporate
+proxy's CA will fail verification for the real providers.
+
+The caps are enforced **on the arriving bytes**, not on the finished file. Each
+transfer is piped through `head -c`, which closes the pipe one byte past the
+limit; curl takes SIGPIPE and the transfer stops there, so at most `cap + 1`
+bytes ever reach the disk. `--max-filesize` is still passed as a cheap
+early-out that refuses a *declared* oversized transfer before its first byte,
+and a response that never ends while staying under the cap is ended by the
+timeouts instead.
+
+Worth being accurate about, since it decides how much the `head -c` is really
+doing: curl 8.21 enforces `--max-filesize` *during* a chunked transfer with no
+`Content-Length`, and stops at exactly the limit —
+`tests/run-tests.sh` measures this. So on a current curl, `--max-filesize`
+alone would already hold. The bound is written this way regardless, because
+that behaviour is curl's to change and older curl does not check an undeclared
+length at all; here the limit is enforced on our side of the boundary and the
+test asserts the byte count rather than trusting the flag.
 
 Media is downloaded over HTTPS only, from `giphy.com` and `klipy.com`
 subdomains. The host is checked before the request and the **post-redirect**
@@ -239,10 +269,16 @@ media from somewhere else, add it with `allowedMediaDomains` in `config.json`
 rather than loosening the check.
 
 The same allowlist is applied to the **results** in `gif-search`, so a result
-carrying an off-allowlist URL is dropped before the picker sees it. That matters
-because the picker's `Image` elements load `previewUrl` themselves rather than
-going through the download path, and they cap what they will decode
-(`sourceSize`) for the same reason the downloads are byte-capped.
+carrying an off-allowlist URL is dropped before the picker ever sees it.
+
+**The picker never fetches a URL itself.** Qt's `Image`, pointed at a remote
+URL, will fetch whatever the provider names for as long as the provider cares
+to send it: no byte cap, no timeout of ours, no origin check, and `sourceSize`
+bounds only the decode, not the transfer. So every tile renders a **local
+file**. `bin/gif-preview` pulls the previews for a result set through
+`gif_fetch_media` — same cap, same origin checks, a few at a time — and a tile
+shows its placeholder until its file is on disk. `sourceSize` is still set, to
+bound what decoding a local file can cost.
 
 `shiftPaste=png` pins the ImageMagick reader to `gif:` instead of letting
 ImageMagick choose a coder by sniffing the file. The bytes came off the
@@ -256,6 +292,29 @@ directory is kept at mode **700** (the file at 600). Tightening the directory
 rather than just the file is deliberate: the picker saves through Quickshell's
 `FileView`, whose atomic write replaces the file with a fresh inode created
 under the process umask, so a mode on the file alone would not survive a save.
+
+## Tests
+
+```bash
+tests/run-tests.sh
+```
+
+No network and no API key: `tests/serve.py` serves the response shapes the byte
+cap has to survive over local HTTPS — chunked with no `Content-Length`, exactly
+the cap, one byte over, a declared-oversized length, and one that trickles
+forever without ever closing. The oversized cases assert on **how many bytes
+the server actually managed to send**, because a cap checked only after the
+transfer looks identical to one enforced during it if all you check is whether
+the file exists at the end.
+
+The suite refuses to run if its own test host is not on the media allowlist —
+otherwise every fetch would be refused at the URL check before a byte was
+requested, and the cap assertions would all pass without testing anything.
+
+It also asserts the byte bound directly, by measuring the file a transfer in
+progress has written, rather than only checking that an oversized download was
+rejected. Those are different claims, and only the first one distinguishes a
+cap enforced while bytes arrive from one checked afterwards.
 
 ## Hacking
 

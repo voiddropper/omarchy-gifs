@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Download result previews into the cache, so the picker can point its Image
+# elements at local files rather than fetching provider URLs itself.
+#
+# Usage:  gif-preview <id> <url> [<id> <url> ...]
+# Output: one id per line, for each preview that is now on disk
+#
+# Every download goes through gif_fetch_media, so the streaming byte cap, the
+# origin check and the redirect check all apply. Qt's Image has none of those:
+# pointed at a remote URL it will fetch whatever the provider names, for as
+# long as the provider cares to send it. That is the whole reason this exists.
+
+set -uo pipefail
+
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=gif-net.sh
+source "$HERE/gif-net.sh"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
+mkdir -p "$CACHE_DIR" 2>/dev/null || exit 0
+
+# A grid's worth of previews, a few at a time: enough that the grid fills
+# promptly, few enough that opening the picker is not a burst of 50 requests.
+max_parallel="${GIF_PREVIEW_PARALLEL:-4}"
+(( max_parallel >= 1 )) || max_parallel=1
+
+declare -A seen=()
+
+while (( $# >= 2 )); do
+  id="$1"; url="$2"; shift 2
+
+  # The id becomes a filename, so refuse anything that could escape the cache.
+  [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || continue
+  [[ -n $url ]] || continue
+  # Ids are normalized from provider ids, so two results can arrive with the
+  # same one. Downloading both would be two jobs writing one destination.
+  [[ -n ${seen[$id]:-} ]] && continue
+  seen[$id]=1
+
+  dest="$CACHE_DIR/$id.preview"
+  if [[ -s $dest ]]; then
+    printf '%s\n' "$id"
+    continue
+  fi
+
+  while (( $(jobs -rp | wc -l) >= max_parallel )); do wait -n; done
+  # Each line is short enough to be written atomically, so parallel workers
+  # reporting at once cannot interleave within a line.
+  { gif_fetch_media "$url" "$dest" "$GIF_MAX_PREVIEW_BYTES" && printf '%s\n' "$id"; } &
+done
+
+wait
+
+# A search fills the cache with a preview per result, so the trimming cannot
+# only live in gif-cache -- that runs when the cursor comes to rest, which may
+# be never.
+gif_prune_cache "$CACHE_DIR"
+exit 0

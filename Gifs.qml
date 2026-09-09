@@ -64,6 +64,12 @@ Item {
   property var cachedIds: ({})
   property var cachedStillIds: ({})
   property var failedIds: ({})
+
+  // Previews are fetched by bin/gif-preview, never by the Image elements
+  // themselves -- see requestPreviews().
+  property var previewFailedIds: ({})
+  property var previewAsked: []
+  property bool previewRerun: false
   property string cachingId: ""
 
   readonly property bool hasApiKey: GifStore.apiKeyFor(config).length > 0
@@ -120,6 +126,11 @@ Item {
     root.mode = "favorites"
     root.searchError = ""
     root.searchResults = []
+    // These record "we tried and it did not work", which is only true of the
+    // conditions at the time. Keeping them across an open would mean a search
+    // run while the network was down leaves permanently blank tiles.
+    root.failedIds = ({})
+    root.previewFailedIds = ({})
     root.rebuildDisplay()
     root.scanCache()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -143,14 +154,22 @@ Item {
       root.cachedIds = anim
       root.cachedStillIds = still
     } catch (e) {
-      // A cache we cannot read is the same as an empty one: everything falls
-      // back to the remote still and downloads on demand.
+      // A cache we cannot read is the same as an empty one: every tile starts
+      // on its placeholder and gets its preview downloaded on demand.
     }
+    // Whatever the scan did not find still needs fetching.
+    previewDebounce.restart()
   }
 
   function close() {
     root.opened = false
     searchDebounce.stop()
+    // Otherwise dismissing mid-fetch leaves a result set's worth of downloads
+    // running for an overlay nobody is looking at.
+    previewDebounce.stop()
+    if (previewProc.running) previewProc.running = false
+    root.previewAsked = []
+    root.previewRerun = false
   }
 
   function dismiss() {
@@ -506,17 +525,109 @@ Item {
     cacheProc.running = true
   }
 
-  function markCached(id) {
+  // gif-cache names what it actually put on disk. The preview and the
+  // animation fail independently, so a zero exit does not mean both arrived --
+  // and marking a still cached that is not there points the tile at a file
+  // that does not exist, with nothing to fall back to.
+  function applyCacheResult(raw) {
+    var id = root.cachingId
     if (!id) return
-    var next = ({})
-    for (var k in root.cachedIds) next[k] = root.cachedIds[k]
-    next[id] = true
-    root.cachedIds = next
+    var lines = String(raw || "").split("\n")
+    var gotAnim = false
+    var gotStill = false
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      if (line === "anim") gotAnim = true
+      else if (line === "preview") gotStill = true
+    }
+
+    if (gotAnim) {
+      var next = ({})
+      for (var k in root.cachedIds) next[k] = root.cachedIds[k]
+      next[id] = true
+      root.cachedIds = next
+    }
+    if (gotStill) {
+      var stills = ({})
+      for (var s in root.cachedStillIds) stills[s] = root.cachedStillIds[s]
+      stills[id] = true
+      root.cachedStillIds = stills
+    }
+  }
+
+  // The cache is pruned behind our back -- oldest first, once it passes 400 --
+  // so a still we recorded can be gone by the time a tile asks for it. Rather
+  // than track that, let the failure to load say so: forget it, and mark it
+  // tried so a genuinely unreadable file cannot loop. The next open() clears
+  // that and it gets another chance.
+  function forgetStill(id) {
+    if (!id) return
+    var stills = ({})
+    for (var s in root.cachedStillIds) if (s !== id) stills[s] = root.cachedStillIds[s]
+    root.cachedStillIds = stills
+
+    var failed = ({})
+    for (var f in root.previewFailedIds) failed[f] = root.previewFailedIds[f]
+    failed[id] = true
+    root.previewFailedIds = failed
+  }
+
+  // Qt's Image, pointed at a remote URL, fetches whatever the provider names
+  // for as long as the provider cares to send it -- no byte cap, no timeout of
+  // ours, no origin check. So the picker never gets a URL: previews are pulled
+  // through bin/gif-preview, which is bounded on all three counts, and the
+  // tiles only ever render the resulting local file.
+  function requestPreviews() {
+    if (!root.opened) return
+    if (previewProc.running) { root.previewRerun = true; return }
+
+    var args = [root.binDir + "/gif-preview"]
+    var asked = []
+    var items = root.displayItems
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i]
+      if (!it || !it.id || !it.previewUrl) continue
+      if (root.cachedStillIds[it.id] === true) continue
+      if (root.previewFailedIds[it.id] === true) continue
+      args.push(String(it.id), String(it.previewUrl))
+      asked.push(it.id)
+    }
+    if (asked.length === 0) return
+
+    root.previewAsked = asked
+    previewProc.command = args
+    previewProc.running = true
+  }
+
+  function applyPreviewListing(raw) {
+    var got = ({})
+    var lines = String(raw || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      if (line) got[line] = true
+    }
 
     var stills = ({})
     for (var s in root.cachedStillIds) stills[s] = root.cachedStillIds[s]
-    stills[id] = true
+    var failed = ({})
+    for (var f in root.previewFailedIds) failed[f] = root.previewFailedIds[f]
+
+    var asked = root.previewAsked
+    for (var j = 0; j < asked.length; j++) {
+      if (got[asked[j]] === true) stills[asked[j]] = true
+      // A preview that did not come back is not asked for again on every
+      // rebuild; that tile keeps its placeholder for this session.
+      else failed[asked[j]] = true
+    }
+
     root.cachedStillIds = stills
+    root.previewFailedIds = failed
+    root.previewAsked = []
+
+    if (root.previewRerun) {
+      root.previewRerun = false
+      previewDebounce.restart()
+    }
   }
 
   function markFailed(id) {
@@ -528,7 +639,10 @@ Item {
   }
 
   onSelectedIndexChanged: cacheDebounce.restart()
-  onDisplayItemsChanged: cacheDebounce.restart()
+  onDisplayItemsChanged: {
+    cacheDebounce.restart()
+    previewDebounce.restart()
+  }
 
   // Scrubbing through a row with the arrow keys should not fire a download per
   // tile passed over -- only where the cursor comes to rest.
@@ -551,6 +665,22 @@ Item {
     }
   }
 
+  // Short, because this only batches up the tiles a rebuild just produced.
+  Timer {
+    id: previewDebounce
+    interval: 60
+    repeat: false
+    onTriggered: root.requestPreviews()
+  }
+
+  Process {
+    id: previewProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyPreviewListing(text)
+    }
+  }
+
   Process {
     id: cacheListProc
     stdout: StdioCollector {
@@ -561,9 +691,12 @@ Item {
 
   Process {
     id: cacheProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyCacheResult(text)
+    }
     onExited: function(exitCode, exitStatus) {
-      if (exitCode === 0) root.markCached(root.cachingId)
-      else root.markFailed(root.cachingId)
+      if (exitCode !== 0) root.markFailed(root.cachingId)
       root.cachingId = ""
       // The cursor may have moved on while this one was downloading.
       cacheDebounce.restart()
@@ -767,15 +900,15 @@ Item {
               readonly property bool hasCursor: root.cursorActive && index === root.selectedIndex
               readonly property bool favorite: root.favoriteIds[modelData.id] === true
 
-              // A favorited GIF has its still frame on disk, so the favorites
-              // view renders with no network at all. If the cache file is
-              // missing the Image falls back to the remote URL on its own.
+              // Always a local file, never a provider URL: until gif-preview
+              // has the still on disk this is empty and the tile shows its
+              // placeholder. Favorites are already cached, so the favorites
+              // view renders with no network at all.
               readonly property string localStill: root.cachedStillIds[modelData.id] === true
                 ? "file://" + root.cacheDir + "/" + modelData.id + ".preview" : ""
               readonly property string localAnim: "file://" + root.cacheDir + "/" + modelData.id + ".tiny.gif"
               readonly property bool animAvailable: root.cachedIds[modelData.id] === true
 
-              property bool stillFellBack: false
               property bool animReady: false
 
               // Drop the decoded animation as soon as the cursor leaves, so
@@ -795,6 +928,19 @@ Item {
                 border.color: tile.hasCursor ? root.selectedText : "transparent"
                 clip: true
 
+                // Something to look at while the preview is still being
+                // fetched, and for a tile whose preview never arrives -- the
+                // stills come from disk now, so there is a real gap between a
+                // result appearing and its image existing.
+                Rectangle {
+                  anchors.fill: parent
+                  anchors.margins: Style.spacing.xs
+                  radius: root.cornerRadius
+                  visible: still.status !== Image.Ready
+                  color: root.foreground
+                  opacity: 0.06
+                }
+
                 // Static first frame. Always present, so there is something to
                 // look at before the animation has downloaded.
                 Image {
@@ -807,13 +953,13 @@ Item {
                   visible: !tile.animReady
                   // A bound on what gets decoded, not a resize: an image
                   // smaller than this is untouched, and provider previews are
-                  // ~200px. Without it a single crafted response could hand
-                  // the shell process an arbitrarily large image to decode.
+                  // ~200px. The bytes are already byte-capped on the way in;
+                  // this bounds what decoding them can cost.
                   sourceSize: Qt.size(1024, 1024)
-                  source: (tile.localStill !== "" && !tile.stillFellBack) ? tile.localStill : tile.modelData.previewUrl
+                  source: tile.localStill
                   onStatusChanged: {
-                    if (status === Image.Error && !tile.stillFellBack && tile.localStill !== "")
-                      tile.stillFellBack = true
+                    if (status === Image.Error && tile.localStill !== "")
+                      root.forgetStill(tile.modelData.id)
                   }
                 }
 
