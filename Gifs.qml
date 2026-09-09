@@ -72,6 +72,15 @@ Item {
   property bool previewRerun: false
   property string cachingId: ""
 
+  // Id of the favorite whose tags are being edited, "" when the editor is
+  // closed. Tags live in favorites.json, so editing one means favoriting it.
+  property string tagEditId: ""
+
+  // Ctrl+T. Kept in the config so it survives a close, the way the provider
+  // choice does -- somebody who wants to see what their favorites are filed
+  // under wants it every time, not once.
+  readonly property bool showTags: config.showTags === true
+
   readonly property bool hasApiKey: GifStore.apiKeyFor(config).length > 0
   readonly property string providerLabel: GifStore.providerLabel(config.provider)
   readonly property string providerHint: GifStore.providerSignupHint(config.provider)
@@ -91,6 +100,9 @@ Item {
   property color scrim: Color.menu.scrim
   property color selectedBackground: Color.menu.selectedBackground
   property color selectedText: Color.menu.selectedText
+  // The query line behaves like a text input, so it is framed like one -- in
+  // the card's own border color, a hair thinner than the card's edge.
+  property var searchBorderSpec: Border.flat(border, Math.max(1, Style.space(1)))
   readonly property int cornerRadius: Style.cornerRadius
   property string fontFamily: Style.font.menuFamily
   property int contentMargin: Style.spacing.panelPadding
@@ -126,6 +138,9 @@ Item {
     root.mode = "favorites"
     root.searchError = ""
     root.searchResults = []
+    // An editor left open by a click that dismissed the picker would come back
+    // over the grid, swallowing every key but Escape.
+    root.closeTagEdit()
     // These record "we tried and it did not work", which is only true of the
     // conditions at the time. Keeping them across an open would mean a search
     // run while the network was down leaves permanently blank tiles.
@@ -163,6 +178,8 @@ Item {
 
   function close() {
     root.opened = false
+    root.tagEditId = ""
+    tagField.text = ""
     searchDebounce.stop()
     // Otherwise dismissing mid-fetch leaves a result set's worth of downloads
     // running for an overlay nobody is looking at.
@@ -214,6 +231,56 @@ Item {
 
     if (root.mode === "search" && root.filterText) root.runSearch()
     else root.rebuildDisplay()
+  }
+
+  // Show the words each GIF is filed under -- its provider tags, or the query
+  // that saved it. Off by default: it is a check on what you saved, not
+  // something to look at while picking.
+  function toggleTags() {
+    var next = ({})
+    for (var k in root.config) next[k] = root.config[k]
+    next.showTags = !root.showTags
+    root.saveConfig(next)
+  }
+
+  // Ctrl+E. Tagging a search result keeps it as well -- there is nowhere else
+  // to write the words -- so a GIF you bothered to describe is a GIF you have
+  // saved. Old favorites, saved before any of this existed, are the reason
+  // this is here: nothing but you knows what you would search for.
+  function startTagEdit() {
+    if (!root.cursorActive) return
+    var item = root.displayItems[root.selectedIndex]
+    if (!item || !item.id) return
+    if (!root.isFavorite(item.id)) root.toggleFavorite(item)
+
+    var at = GifStore.indexOfId(root.favorites, item.id)
+    if (at < 0) return
+    root.tagEditId = String(item.id)
+    tagField.text = GifStore.keywordsToText(GifStore.editableKeywords(root.favorites[at].keywords))
+    tagField.forceActiveFocus()
+    tagField.selectAll()
+  }
+
+  function saveTagEdit() {
+    var id = root.tagEditId
+    if (!id) return
+    var list = root.favorites.slice()
+    var at = GifStore.indexOfId(list, id)
+    if (at >= 0) {
+      var entry = GifStore.normalizeItem(list[at])
+      entry.keywords = GifStore.applyTagEdit(list[at].keywords, tagField.text)
+      list[at] = entry
+      root.favorites = list
+      root.saveFavorites()
+      if (root.mode === "favorites") root.rebuildDisplay()
+    }
+    root.closeTagEdit()
+  }
+
+  function closeTagEdit() {
+    root.tagEditId = ""
+    tagField.text = ""
+    keyCatcher.forceActiveFocus()
   }
 
   // ------------------------------------------------------------ key entry
@@ -452,10 +519,18 @@ Item {
 
     if (at >= 0) {
       list.splice(at, 1)
+      // The media goes with the favorite -- there is no reason to keep a copy
+      // of a GIF you dropped -- so stop claiming it is on disk as well.
       Quickshell.execDetached([root.binDir + "/gif-uncache", String(item.id)])
+      root.abandonCache(item.id)
     } else {
-      var entry = GifStore.normalizeItem(item)
-      entry.addedAt = Math.floor(Date.now() / 1000)
+      // Save what found this GIF along with it: the provider's tags, or the
+      // query that surfaced it when there are none. Favorites are searched
+      // offline against those words, so a GIF with a useless title is still
+      // findable by whatever you typed to get it.
+      // The query the grid is showing results for, which during the search
+      // debounce is not yet what has been typed.
+      var entry = GifStore.favoriteEntry(item, root.lastRequestedQuery || root.filterText)
       // Newest first, so a GIF you just saved is the first thing you see next
       // time the picker opens.
       list.unshift(entry)
@@ -560,6 +635,29 @@ Item {
   // than track that, let the failure to load say so: forget it, and mark it
   // tried so a genuinely unreadable file cannot loop. The next open() clears
   // that and it gets another chance.
+  // Unfavoriting deletes the media, so stop claiming the animation is on disk.
+  // Two things this deliberately does not do: it leaves cachedStillIds alone,
+  // because a tile still on screen in the search view goes on drawing the
+  // still it already decoded and there is nothing here to re-request it with;
+  // and it clears failedIds, because gif-uncache takes the temp files of a
+  // download that is still running, which makes that download exit non-zero
+  // and would otherwise mark the id dead for the rest of the session.
+  function abandonCache(id) {
+    if (!id) return
+    if (root.cachingId === id) {
+      if (cacheProc.running) cacheProc.running = false
+      root.cachingId = ""
+    }
+
+    var anim = ({})
+    for (var a in root.cachedIds) if (a !== id) anim[a] = root.cachedIds[a]
+    root.cachedIds = anim
+
+    var failed = ({})
+    for (var f in root.failedIds) if (f !== id) failed[f] = root.failedIds[f]
+    root.failedIds = failed
+  }
+
   function forgetStill(id) {
     if (!id) return
     var stills = ({})
@@ -782,6 +880,17 @@ Item {
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          // While the tag editor is open it owns the keyboard: its field is a
+          // real TextField, and the picker's own chords -- every letter is one
+          // -- would otherwise eat what is being typed into it.
+          if (root.tagEditId !== "") {
+            if (event.key === Qt.Key_Escape) {
+              root.closeTagEdit()
+              event.accepted = true
+            }
+            return
+          }
+
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) root.setFilter("")
             else root.dismiss()
@@ -791,6 +900,12 @@ Item {
             event.accepted = true
           } else if (event.key === Qt.Key_P && (event.modifiers & Qt.ControlModifier)) {
             root.cycleProvider((event.modifiers & Qt.ShiftModifier) ? -1 : 1)
+            event.accepted = true
+          } else if (event.key === Qt.Key_E && (event.modifiers & Qt.ControlModifier)) {
+            root.startTagEdit()
+            event.accepted = true
+          } else if (event.key === Qt.Key_T && (event.modifiers & Qt.ControlModifier)) {
+            root.toggleTags()
             event.accepted = true
           } else if (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
             root.focusKeyField()
@@ -841,14 +956,23 @@ Item {
         spacing: root.contentSpacing
 
         // ------------------------------------------------------------ header
-        Item {
+        // Keystrokes are handled by keyCatcher, so this is a Text rather than
+        // a TextField -- but it is the search box as far as anyone using the
+        // picker is concerned, so it is framed like one.
+        BorderSurface {
+          id: searchBar
           width: parent.width
           height: root.headerHeight
+          radius: root.cornerRadius
+          color: "transparent"
+          borderSpec: root.searchBorderSpec
+          padding: Style.spacing.controlPaddingX
 
           Text {
             id: queryText
             textFormat: Text.PlainText
             anchors.left: parent.left
+            anchors.leftMargin: searchBar.contentLeftInset
             anchors.right: modeBadge.left
             anchors.rightMargin: Style.spacing.md
             anchors.verticalCenter: parent.verticalCenter
@@ -864,6 +988,7 @@ Item {
             id: modeBadge
             textFormat: Text.PlainText
             anchors.right: parent.right
+            anchors.rightMargin: searchBar.contentRightInset
             anchors.verticalCenter: parent.verticalCenter
             text: root.searching
               ? "searching…"
@@ -880,6 +1005,57 @@ Item {
           id: gridArea
           width: parent.width
           height: parent.height - root.headerHeight - root.footerHeight - root.contentSpacing * 2
+
+          // ------------------------------------------------------- tag edit
+          // Floats over the top of the grid rather than taking a row in the
+          // column, so opening it does not reflow the tiles under the cursor.
+          BorderSurface {
+            id: tagEditor
+            visible: root.tagEditId !== ""
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: tagRow.implicitHeight + Style.spacing.sm * 2
+            z: 2
+            onVisibleChanged: if (visible) tagField.forceActiveFocus()
+            radius: root.cornerRadius
+            color: root.background
+            borderSpec: root.searchBorderSpec
+
+            Row {
+              id: tagRow
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.leftMargin: Style.spacing.sm
+              anchors.rightMargin: Style.spacing.sm
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.spacing.controlGap
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Tags"
+                color: root.selectedText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              TextField {
+                id: tagField
+                width: tagRow.width - tagRow.spacing * 2 - Style.space(46)
+                placeholderText: "words you would search for, separated by commas"
+                foreground: root.foreground
+                accent: root.selectedText
+                onAccepted: root.saveTagEdit()
+                Keys.onPressed: function(event) {
+                  if (event.key === Qt.Key_Escape) {
+                    root.closeTagEdit()
+                    event.accepted = true
+                  }
+                }
+              }
+            }
+          }
 
           GridView {
             id: resultGrid
@@ -994,6 +1170,37 @@ Item {
                   styleColor: root.background
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
+                }
+
+                // Tags, along the bottom edge, only while Ctrl+T asks for
+                // them. The band is drawn with an alpha color rather than
+                // opacity, which would take the text down with it.
+                Rectangle {
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
+                  anchors.margins: Style.spacing.xs
+                  radius: root.cornerRadius
+                  visible: root.showTags && tagText.text !== ""
+                  height: tagText.implicitHeight + Style.spacing.xs * 2
+                  color: Qt.rgba(root.background.r, root.background.g, root.background.b, 0.85)
+
+                  Text {
+                    id: tagText
+                    textFormat: Text.PlainText
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.leftMargin: Style.spacing.sm
+                    anchors.rightMargin: Style.spacing.sm
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: GifStore.tagLabel(tile.modelData)
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                  }
                 }
 
                 MouseArea {
@@ -1193,8 +1400,11 @@ Item {
             opacity: 0.5
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
-            text: "Enter link   ·   Shift+Enter image   ·   Ctrl+D favorite   ·   Tab "
+            text: root.tagEditId !== ""
+              ? "Enter save   ·   Esc cancel   ·   commas separate tags"
+              : "Enter link   ·   Shift+Enter image   ·   Ctrl+D favorite   ·   Ctrl+E tags   ·   Tab "
                 + (root.mode === "favorites" ? "search" : "favorites")
+                + "   ·   Ctrl+T " + (root.showTags ? "hide tags" : "show tags")
                 + (root.multipleProviders ? "   ·   Ctrl+P " + GifStore.providerLabel(GifStore.nextProvider(root.config.provider, 1)) : "")
                 + "   ·   Esc close"
           }

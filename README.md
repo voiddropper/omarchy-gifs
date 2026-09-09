@@ -93,6 +93,7 @@ is unavailable.
 | `contentFilter` | `"medium"` | `off`, `low`, `medium`, `high` (mapped onto GIPHY's `r`/`pg-13`/`pg`/`g`) |
 | `pasteUrl`      | `"page"`   | plain paste: `page` sends the shareable page link, `gif` the raw `.gif` URL |
 | `shiftPaste`    | `"html"`   | shift paste: `html`, `png`, `gif` or `file` — see below       |
+| `showTags`      | `false`    | show each GIF's tags on its tile; toggled in the picker with `Ctrl+T` |
 | `limit`         | `50`       | results per search, clamped to 8–50                           |
 | `allowedMediaDomains` | `[]` | extra domains media may be downloaded from, on top of `giphy.com` and `klipy.com` |
 
@@ -112,6 +113,8 @@ and animate that too; it just renders as an image rather than an unfurled card.
 | `Enter` / left click         | paste a link to the GIF                      |
 | `Shift+Enter` / Shift+click  | paste the GIF **itself**                     |
 | `Ctrl+D` / right click       | toggle favorite                              |
+| `Ctrl+T`                     | show / hide tags on the tiles                |
+| `Ctrl+E`                     | edit the selected GIF's tags (saves it too)  |
 | `Ctrl+P` / `Ctrl+Shift+P`    | next / previous provider                     |
 | `Ctrl+K`                     | focus the API key field                      |
 | `Backspace` / `Ctrl+U`       | delete a character / clear the query          |
@@ -120,6 +123,33 @@ and animate that too; it just renders as an image rather than an unfurled card.
 The picker opens on your favorites, so the GIFs you actually reuse are one
 keypress away and cost no network call. Typing switches to the provider;
 clearing the query drops back.
+
+Favoriting a GIF also saves the words that found it, so favorites stay
+searchable even when a GIF has no useful title — and many have none at all.
+What gets saved is whatever the provider says about the GIF, with your query in
+front of it. GIPHY sends no tags on a search response; what it does send, on
+roughly a third of results, is `alt_text` — a one-sentence description ("A man
+outdoors, holding a fishing pole, looks over his shoulder… He then nods in
+approval."), which usually contains the word you searched for. When it does,
+the query isn't stored again on top of it.
+
+Searching favorites matches the title and those words. A title hit sorts first,
+and titles and short tags match loosely (`dwi` finds "deal with it") while a
+description has to contain what you typed — scattered letters match almost any
+sentence.
+
+`Ctrl+T` labels every tile with those words, so you can see what a GIF is filed
+under before wondering why it won't come up. The setting sticks between
+sessions; tiles with no tags fall back to their title.
+
+`Ctrl+E` edits them. The field opens over the grid with your tags in it, commas
+separate one from the next, `Enter` saves and `Esc` cancels. A provider
+description is not shown there and is kept as it is — it is full of commas, and
+the editor separates on commas. This is how
+a favorite saved before any of this existed gets tagged — nothing but you knows
+what you would search for, and GIPHY mostly has nothing to offer after the
+fact. Tagging a GIF you have not favorited saves it as well; there is nowhere
+else to keep the words.
 
 ## Link or the GIF itself
 
@@ -181,8 +211,15 @@ GIF waits; originals run a few MB.
   it lands in clipboard history and can be pasted again. With `--media` it
   downloads the full-size GIF and copies that instead.
 - `bin/gif-cache`, `bin/gif-cached`, `bin/gif-uncache` manage
-  `~/.cache/omarchy/gifs`.
-- Favorites are plain JSON at `~/.config/omarchy/gifs/favorites.json`.
+  `~/.cache/omarchy/gifs`. Unfavoriting runs `gif-uncache`, which takes
+  everything that id left behind — the still, the animation, the full-size
+  copy `Shift+Enter` downloaded, and the temp files of a transfer still in
+  flight, so a download cannot land after the delete and put the file back.
+- Favorites are plain JSON at `~/.config/omarchy/gifs/favorites.json`, each
+  entry carrying a `keywords` list (the provider's description and tags, plus
+  the query that found it). Keywords are capped at 12 per favorite and 200
+  characters each, since they come from a provider response. Older favorites
+  without the field still load; they just match on title alone.
 - Ids are prefixed per provider (`g_`, `k_`), since favorites and the media
   cache are shared between them.
 
