@@ -1,7 +1,10 @@
 #!/bin/bash
 
-# Drop a GIF's cached media when it stops being a favorite.
-# Usage: omarchy-gif-uncache <tenor-id>
+# Drop everything a GIF left in the cache when it stops being a favorite: the
+# still, the animation, the full-size copy Shift+Enter downloads, and the temp
+# files of a transfer that is still running.
+#
+# Usage: gif-uncache <id>
 
 set -uo pipefail
 
@@ -9,6 +12,14 @@ CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/gifs"
 
 id="${1:-}"
 [[ -n $id ]] || exit 1
+# The id is interpolated into a glob below, so it has to be exactly the
+# character set the picker builds ids from: no "*", no "/", no "..".
 [[ $id =~ ^[A-Za-z0-9_-]+$ ]] || exit 1
 
-rm -f "$CACHE_DIR/$id.preview" "$CACHE_DIR/$id.tiny.gif"
+rm -f "$CACHE_DIR/$id.preview" "$CACHE_DIR/$id.tiny.gif" "$CACHE_DIR/$id.full.gif"
+
+# gif_fetch_media streams into "<dest>.<pid>.part" and publishes it with mv, so
+# an unfavorite that races a download has to take the temp files too --
+# otherwise the transfer lands after the delete and puts the file back. With
+# the temp gone the transfer finds nothing to publish and gives up.
+rm -f "$CACHE_DIR/$id".*.part "$CACHE_DIR/$id".*.meta

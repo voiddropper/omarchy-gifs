@@ -9,6 +9,14 @@
 #
 # The whole request lives in REQ_REQUEST and is fed to curl on stdin by
 # gif_http_get, so neither the key nor the search term ever reaches an argv.
+#
+# `keywords` is the descriptive text a result carries, normalized best-effort:
+# both providers document tags but GIPHY omits them from search responses
+# entirely, so what actually shows up is GIPHY's alt_text -- a one-sentence
+# description, present on roughly a third of results and usually containing
+# the searched word. Its "Video gif." / "Movie gif." category prefix is
+# stripped, since it describes every result equally. The picker puts the
+# user's own query first when it saves a favorite.
 
 HERE_PROVIDERS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=gif-net.sh
@@ -59,6 +67,14 @@ data-urlencode = $(gif_cfg_quote "q=$query")"
             | {
                 id: ("g_" + ((.id // "") | tostring | gsub("[^A-Za-z0-9_-]"; "-"))),
                 title: (.title // ""),
+                keywords: (
+                  [ ((.tags // .keywords // []) | if type == "string" then split(",") else . end)[]? | tostring ]
+                  + [ ((.alt_text // "")
+                       | gsub("^\\s*[A-Za-z ]{0,20}gif[.:]\\s*"; ""; "i")
+                       | gsub("\\s+"; " ")
+                       | sub("^ +"; "") | sub(" +$"; ""))
+                      | select(length > 0) ]
+                ),
                 pageUrl: (.url // ""),
                 gifUrl: (.images.original.url // .images.downsized.url // .images.fixed_width.url),
                 tinyGifUrl: (.images.fixed_width.url // .images.downsized.url // .images.original.url),
@@ -102,6 +118,7 @@ data-urlencode = $(gif_cfg_quote "q=$query")"
             | {
                 id: ("k_" + ((.slug // .id // "") | tostring | gsub("[^A-Za-z0-9_-]"; "-"))),
                 title: (.title // ""),
+                keywords: [ ((.tags // .keywords // []) | if type == "string" then split(",") else . end)[]? | tostring ],
                 pageUrl: (.file.hd.gif.url // .file.md.gif.url // .file.sm.gif.url),
                 gifUrl: (.file.hd.gif.url // .file.md.gif.url // .file.sm.gif.url),
                 tinyGifUrl: (.file.sm.gif.url // .file.md.gif.url // .file.hd.gif.url),

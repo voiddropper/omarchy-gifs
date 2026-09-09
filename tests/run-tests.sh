@@ -484,6 +484,51 @@ left=$(find "$PRUNE" -maxdepth 1 -type f ! -name '*.part' ! -name '*.meta' | wc 
 rm -f "$XDG_CONFIG_HOME/omarchy/gifs/favorites.json"
 
 # ===========================================================================
+group "unfavoriting clears the cache"
+# ===========================================================================
+# A GIF you dropped should not go on costing disk. Three files can exist per
+# id -- the still, the animation, and the full-size copy Shift+Enter downloads
+# -- plus the temp files of a transfer still in flight, which is the one that
+# would otherwise land after the delete and put the file back.
+
+UNC="$XDG_CACHE_HOME/omarchy/gifs"
+mkdir -p "$UNC"
+seed_cache() { # <id>
+  : > "$UNC/$1.preview"
+  : > "$UNC/$1.tiny.gif"
+  : > "$UNC/$1.full.gif"
+  : > "$UNC/$1.preview.4242.part"
+  : > "$UNC/$1.tiny.gif.4242.meta"
+}
+
+seed_cache g_drop
+seed_cache g_dropkeep          # an id that merely starts with the same letters
+"$BIN/gif-uncache" g_drop
+
+for kind in preview tiny.gif full.gif preview.4242.part tiny.gif.4242.meta; do
+  [[ -e $UNC/g_drop.$kind ]] \
+    && no "unfavoriting removes $kind" \
+    || ok "unfavoriting removes $kind"
+done
+
+left=$(find "$UNC" -maxdepth 1 -name 'g_dropkeep.*' | wc -l)
+(( left == 5 )) && ok "another id sharing the prefix is untouched" \
+  || no "another id sharing the prefix is untouched" "$left of 5 files left"
+
+# The id lands in a glob, so anything that could escape the cache directory or
+# widen the match has to be refused before rm sees it.
+: > "$UNC/bystander.preview"
+for bad in '../bystander' 'g_*' '' 'g/../x'; do
+  "$BIN/gif-uncache" "$bad" 2>/dev/null
+  rc=$?
+  (( rc != 0 )) && ok "gif-uncache refuses id \"$bad\"" \
+    || no "gif-uncache refuses id \"$bad\"" "exited 0"
+done
+[[ -e $UNC/bystander.preview ]] && ok "a refused id deletes nothing" \
+  || no "a refused id deletes nothing"
+rm -f "$UNC"/g_drop* "$UNC/bystander.preview"
+
+# ===========================================================================
 group "the API key's directory is private"
 # ===========================================================================
 "$BIN/gif-secure-config"
@@ -491,6 +536,168 @@ mode=$(stat -c %a "$XDG_CONFIG_HOME/omarchy/gifs")
 [[ $mode == 700 ]] && ok "config dir is 700" || no "config dir is 700" "is $mode"
 mode=$(stat -c %a "$GIF_CONFIG_PATH")
 [[ $mode == 600 ]] && ok "config.json is 600" || no "config.json is 600" "is $mode"
+
+# ===========================================================================
+group "favorites remember the words that found them"
+# ===========================================================================
+# A favorite is worth little if you cannot find it again, and titles are a
+# thin handle -- plenty of GIFs have none. So a favorite records what the
+# provider said about the GIF (for GIPHY that is alt_text, a description
+# sentence carried on about a third of results) with the query that found it
+# in front, unless the description already contains it.
+
+# shellcheck source=../bin/gif-providers.sh
+source "$BIN/gif-providers.sh"
+
+# The jq program each provider normalizes with has to carry tags through, and
+# survive the shapes an API is free to send instead of an array of strings.
+prov_case() { # <name> <provider> <payload> <expected keywords json>
+  gif_build_request "$2" "0123456789abcdef" search cats 10 medium || { no "$1" "gif_build_request failed"; return; }
+  got=$(printf '%s' "$3" | jq -c "$REQ_NORMALIZE" 2>&1 | jq -c '[.results[].keywords]' 2>&1)
+  [[ $got == "$4" ]] && ok "$1" || no "$1" "wanted $4 got $got"
+}
+
+giphy_item() { # <tags json, or nothing> <alt_text, or nothing>
+  local tags="${1:-}"
+  jq -cn --argjson tags "${tags:-null}" --arg alt "${2:-}" \
+    '{data:[{id:"a",title:"t",tags:$tags,alt_text:$alt,images:{fixed_width:{url:"u",width:"1",height:"1"}}}]}'
+}
+klipy_item() { # <tags json, or nothing>
+  local tags="${1:-}"
+  jq -cn --argjson tags "${tags:-null}" \
+    '{data:{data:[{slug:"a",title:"t",tags:$tags,file:{sm:{gif:{url:"u",width:1,height:1}}}}]}}'
+}
+
+prov_case "giphy carries tags through as keywords" giphy "$(giphy_item '["cat","funny"]')" '[["cat","funny"]]'
+prov_case "klipy carries tags through as keywords" klipy "$(klipy_item '["cat","funny"]')" '[["cat","funny"]]'
+prov_case "a result with no tags normalizes to no keywords" giphy "$(giphy_item)" '[[]]'
+prov_case "a comma-separated tag string is split" giphy "$(giphy_item '"cat, funny"')" '[["cat"," funny"]]'
+prov_case "a tag field of the wrong type is dropped" giphy "$(giphy_item 123)" '[[]]'
+
+# GIPHY sends no tags on a search response at all; alt_text is what actually
+# describes a result, behind a category prefix that describes every result
+# equally and so is worth nothing in a keyword.
+prov_case "giphy carries alt_text through as a keyword" giphy \
+  "$(giphy_item "" "Video gif. A man nods in approval.")" '[["A man nods in approval."]]'
+prov_case "the alt_text category prefix is stripped" giphy \
+  "$(giphy_item "" "Celebrity gif. Jack Nicholson nods slowly.")" '[["Jack Nicholson nods slowly."]]'
+prov_case "an empty alt_text adds no keyword" giphy "$(giphy_item '["cat"]' "")" '[["cat"]]'
+prov_case "tags and alt_text both come through" giphy \
+  "$(giphy_item '["cat"]' "TV gif. A cat nods.")" '[["cat","A cat nods."]]'
+
+# The picker-side rules live in GifStore.js, which is QML JS with a .pragma
+# line node cannot parse -- strip it and the rest is plain CommonJS.
+if command -v node >/dev/null 2>&1; then
+  sed '1{/^\.pragma/d}' "$ROOT/GifStore.js" > "$TMP/gifstore.js"
+  js_case() { # <name> <expression> <expected>
+    got=$(node -e "var S=require('$TMP/gifstore.js');console.log(JSON.stringify($2))" 2>&1)
+    [[ $got == "$3" ]] && ok "$1" || no "$1" "wanted $3 got $got"
+  }
+
+  js_case "the query leads, the provider's words follow" \
+    'S.favoriteEntry({id:"a",keywords:["cat","funny"]},"dog").keywords' '["dog","cat","funny"]'
+  js_case "a query the description already contains is not stored twice" \
+    'S.favoriteEntry({id:"a",keywords:["A man nods in approval."]},"nod").keywords' \
+    '["A man nods in approval."]'
+  js_case "the query is stored when the description misses it" \
+    'S.favoriteEntry({id:"a",keywords:["A cat blinks slowly."]},"nod").keywords' \
+    '["nod","A cat blinks slowly."]'
+  js_case "the query is saved when the provider described nothing" \
+    'S.favoriteEntry({id:"a"},"  deal   with it ").keywords' '["deal with it"]'
+  js_case "a query is one keyword, not one per word" \
+    'S.favoriteEntry({id:"a"},"deal with it").keywords.length' '1'
+  js_case "keywords survive a write and read of favorites.json" \
+    'S.parseFavorites(S.serializeFavorites([S.favoriteEntry({id:"a"},"deal with it")]))[0].keywords' \
+    '["deal with it"]'
+  js_case "a favorite with an empty title is found by its keywords" \
+    'S.filterFavorites([S.favoriteEntry({id:"a"},"deal with it")],"deal").map(function(i){return i.id})' \
+    '["a"]'
+  js_case "a title match still outranks a keyword match" \
+    'S.filterFavorites([S.favoriteEntry({id:"kw"},"deal with it"),S.normalizeItem({id:"title",title:"deal with it"})],"deal").map(function(i){return i.id})' \
+    '["title","kw"]'
+  js_case "a query that matches neither still filters the favorite out" \
+    'S.filterFavorites([S.favoriteEntry({id:"a",title:"cat"},"funny")],"zzz").length' '0'
+  # A description is long enough that scattered-subsequence matching hits
+  # almost anything: "shoe" is s-h-o-e in order in the sentence below.
+  js_case "a description matches a word it contains" \
+    'S.filterFavorites([S.favoriteEntry({id:"a",keywords:["A man holding a fishing pole nods in approval."]},"nod")],"fishing").length' \
+    '1'
+  js_case "a description does not match scattered letters" \
+    'S.filterFavorites([S.favoriteEntry({id:"a",keywords:["A man holding a fishing pole nods in approval."]},"nod")],"shoe").length' \
+    '0'
+  js_case "a short keyword still matches loosely" \
+    'S.filterFavorites([S.favoriteEntry({id:"a"},"deal with it")],"dwi").length' '1'
+  # These land in a file we rewrite on every toggle, from a response we do not
+  # control, so the list is bounded on both counts.
+  js_case "the keyword list is capped" \
+    'S.normalizeKeywords(Array.from({length:40},function(_,i){return "w"+i})).length' '12'
+  js_case "a single keyword is capped, with room for a description" \
+    'S.normalizeKeywords(["x".repeat(500)])[0].length' '200'
+  js_case "duplicate keywords collapse, case-insensitively" \
+    'S.normalizeKeywords(["Cat","cat","CAT"])' '["Cat"]'
+  js_case "non-text keywords are dropped" \
+    'S.normalizeKeywords([null,"",{},["x"],"ok"])' '["ok"]'
+  # Everything the picker labels or favorites comes back out of a GridView as
+  # modelData, where a keyword array is a QVariantList: indexable, with a
+  # length, and Array.isArray says no. Reading it as an array is how the tags
+  # silently turned back into titles.
+  js_case "a keyword list that crossed the model boundary still labels" \
+    'S.tagLabel({title:"A Title",keywords:{0:"A man nods.",length:1}})' '"A man nods."'
+  js_case "a keyword list that crossed the model boundary still normalizes" \
+    'S.normalizeKeywords({0:"cat",1:"funny",length:2})' '["cat","funny"]'
+  js_case "a keyword list that crossed the model boundary still favorites" \
+    'S.favoriteEntry({id:"a",keywords:{0:"A man nods.",length:1}},"nod").keywords' \
+    '["A man nods."]'
+  js_case "a keyword list that crossed the model boundary still matches" \
+    'S.filterFavorites([{id:"a",title:"",keywords:{0:"A man nods.",length:1}}],"nods").length' '1'
+  js_case "a string is not mistaken for a keyword list" 'S.asList("nope")' '[]'
+
+  # Ctrl+E edits tags as text: one keyword per comma, in and back out again.
+  js_case "the editor shows keywords as comma-separated text" \
+    'S.keywordsToText(["nod","deal with it"])' '"nod, deal with it"'
+  js_case "what the editor gives back parses into keywords" \
+    'S.normalizeKeywords("nod, deal with it")' '["nod","deal with it"]'
+  js_case "an emptied editor field clears the tags" 'S.normalizeKeywords("  ")' '[]'
+  js_case "the editor round-trips a keyword list unchanged" \
+    'S.normalizeKeywords(S.keywordsToText(["cat","high five"]))' '["cat","high five"]'
+  # A provider description is full of commas, which is the editor's separator.
+  # Showing one in the field would shred it into fragments on the next save --
+  # and short fragments match scattered letters again, undoing the guard.
+  js_case "a description is not shown in the editor" \
+    'S.editableKeywords(["nod","A man nods, slowly, in approval, by a river."])' '["nod"]'
+  js_case "a description survives a save untouched" \
+    'S.applyTagEdit(["nod","A man nods, slowly, in approval, by a river."],"nod")' \
+    '["nod","A man nods, slowly, in approval, by a river."]'
+  js_case "editing the words keeps the description" \
+    'S.applyTagEdit(["nod","A man nods, slowly, in approval, by a river."],"nod, redford").length' '3'
+  js_case "a saved description still refuses scattered letters" \
+    'S.filterFavorites([{id:"a",title:"",keywords:S.applyTagEdit(["A man nods, slowly, in approval, by a river."],"")}],"soar").length' \
+    '0'
+  js_case "an emptied field clears the words but not the description" \
+    'S.applyTagEdit(["nod","A man nods, slowly, in approval, by a river."],"")' \
+    '["A man nods, slowly, in approval, by a river."]'
+  # The length guard is about description sentences; a title is a name however
+  # long it runs, and abbreviations have always been able to find one.
+  js_case "a long title still matches an abbreviation" \
+    'S.filterFavorites([{id:"a",title:"Awkward Season 4 Episode 12 GIF by The Office"}],"aweoffice").length' '1'
+  js_case "a favorite saved before keywords existed still loads" \
+    'S.parseFavorites(JSON.stringify({version:1,items:[{id:"old",title:"an old one"}]}))[0].keywords' '[]'
+
+  # Ctrl+T reads the same words back off the tiles, so a favorite saved before
+  # keywords existed has to fall back to its title rather than showing nothing.
+  js_case "a tile labels itself with its keywords" \
+    'S.tagLabel({keywords:["deal with it","sunglasses"]})' '"deal with it · sunglasses"'
+  js_case "a tile with no keywords falls back to its title" \
+    'S.tagLabel({title:"Awkward The Office GIF"})' '"Awkward The Office GIF"'
+  js_case "a tile with neither is left unlabelled" 'S.tagLabel({})' '""'
+  js_case "the tag toggle survives a config round trip" \
+    'JSON.parse(S.serializeConfig(S.parseConfig(JSON.stringify({showTags:true})))).showTags' 'true'
+  js_case "the tag toggle defaults to off" 'S.defaultConfig().showTags' 'false'
+  js_case "a non-boolean showTags does not turn tags on" \
+    'S.parseConfig(JSON.stringify({showTags:"yes"})).showTags' 'false'
+else
+  skipt "GifStore.js favorite-keyword rules" "node is not installed"
+fi
 
 # ===========================================================================
 printf '\n\033[1m%d passed, %d failed, %d skipped\033[0m\n' "$pass" "$fail" "$skip"
